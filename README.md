@@ -18,6 +18,10 @@ This project is built upon and extends [godot-mcp](https://github.com/Coding-Sol
 
 The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **157 tools** with the following major additions:
 
+### New in 3.1
+- **`validate_script` autoload resolution** - Script validation now compiles the target through a `SceneTree` at `_initialize()` (after project autoloads are registered) instead of `--check-only` at `_init()`. References to autoload singletons no longer produce false `Identifier not found` errors, while real syntax/type errors are still caught. Verified building a full game whose scripts reference several autoloads.
+- **`manage_input_map` event merging** - Adding a second key to an existing input action now merges it into that action's `events` array (with `physical_keycode` de-duplication) instead of writing a duplicate `actionname=` line, which previously left `project.godot` malformed and silently dropped earlier bindings.
+
 ### New in 3.0
 - **.NET / C# support** - Scaffold C# projects and generate C# scripts (`create_project` with `dotnet: true`, `create_csharp_script`); the `.csproj` SDK version is matched to your installed Godot.
 - **GDScript diagnostics** - Validate scripts for syntax and type errors without running the game (`validate_script`, and `validate_scripts` for all git-changed or project-wide files).
