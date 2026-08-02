@@ -11,7 +11,7 @@ var _busy: bool = false
 var _busy_since: float = 0.0
 var _current_id: Variant = null
 const PORT: int = 9090
-const BUSY_TIMEOUT: float = 120.0
+const BUSY_TIMEOUT: float = 15.0
 var _key_map: Dictionary
 var _held_keys: Dictionary = {}
 
@@ -118,6 +118,8 @@ func _handle_command(json_str: String) -> void:
 			await _cmd_key_press(params)
 		"eval":
 			await _cmd_eval(params)
+		"get_project_info":
+			_cmd_get_project_info()
 		"wait":
 			await _cmd_wait(params)
 		# Sync commands
@@ -339,6 +341,17 @@ func _handle_command(json_str: String) -> void:
 			_cmd_draw_texture(params)
 		_:
 			_send_response({"error": "Unknown command: %s" % command})
+
+	# Safety net: if a command handler aborted (script error) before sending a
+	# response, release the busy flag so the server never gets stuck forever.
+	if _busy:
+		_send_response_raw({
+			"error": "Command handler failed or returned no response: %s" % command,
+			"id": _current_id,
+		})
+		_busy = false
+		_busy_since = 0.0
+		_current_id = null
 
 
 # Send response and clear busy flag
@@ -562,6 +575,12 @@ func _cmd_eval(params: Dictionary) -> void:
 		_send_response({"error": "No code provided"})
 		return
 
+	var timeout_ms: float = float(params.get("timeout_ms", 30000))
+	if timeout_ms < 1000.0:
+		timeout_ms = 1000.0
+	if timeout_ms > 120000.0:
+		timeout_ms = 120000.0
+
 	# Wrap user code in a function so we can capture the return value
 	var script_source: String = """extends Node
 
@@ -587,12 +606,41 @@ func _run():
 	temp_node.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(temp_node)
 
+	# Watchdog: if the eval'd code hangs (e.g. runtime error aborts the coroutine
+	# or an await never resolves), respond and release the busy flag instead of
+	# leaving the server stuck until BUSY_TIMEOUT.
+	var watchdog: Timer = Timer.new()
+	watchdog.wait_time = timeout_ms / 1000.0
+	watchdog.one_shot = true
+	watchdog.timeout.connect(func():
+		if is_instance_valid(temp_node):
+			temp_node.queue_free()
+		_send_response({"success": false, "error": "Eval timed out after %.1fs" % (timeout_ms / 1000.0)})
+	)
+	add_child(watchdog)
+	watchdog.start()
+
 	var result: Variant = null
 	if temp_node.has_method("execute"):
 		result = await temp_node.execute()
 
+	if watchdog.is_stopped():
+		# Watchdog already responded (timeout). Avoid double response.
+		return
+	watchdog.stop()
+
 	temp_node.queue_free()
 	_send_response({"success": true, "result": _variant_to_json(result)})
+
+
+func _cmd_get_project_info() -> void:
+	var info: Dictionary = Engine.get_version_info()
+	_send_response({
+		"success": true,
+		"project_path": ProjectSettings.globalize_path("res://"),
+		"project_name": ProjectSettings.get_setting("application/config/name", ""),
+		"godot_version": info.get("string", ""),
+	})
 
 
 func _indent_code(code: String) -> String:
@@ -3308,11 +3356,13 @@ func _cmd_light_3d(params: Dictionary) -> void:
 		if light is AreaLight3D:
 			if params.has("size"):
 				var s: Dictionary = params["size"]
-				(light as AreaLight3D).size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
+				(light as AreaLight3D).area_size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
 			if params.has("area_attenuation"):
 				(light as AreaLight3D).area_attenuation = float(params["area_attenuation"])
 			if params.has("area_range"):
 				(light as AreaLight3D).area_range = float(params["area_range"])
+			if params.has("area_normalize_energy"):
+				(light as AreaLight3D).area_normalize_energy = bool(params["area_normalize_energy"])
 		if params.has("name") and not (params["name"] as String).is_empty():
 			light.name = params["name"]
 		parent.add_child(light)
@@ -3334,11 +3384,13 @@ func _cmd_light_3d(params: Dictionary) -> void:
 		if light is AreaLight3D:
 			if params.has("size"):
 				var s: Dictionary = params["size"]
-				(light as AreaLight3D).size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
+				(light as AreaLight3D).area_size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
 			if params.has("area_attenuation"):
 				(light as AreaLight3D).area_attenuation = float(params["area_attenuation"])
 			if params.has("area_range"):
 				(light as AreaLight3D).area_range = float(params["area_range"])
+			if params.has("area_normalize_energy"):
+				(light as AreaLight3D).area_normalize_energy = bool(params["area_normalize_energy"])
 		_send_response({"success": true, "action": "configure", "path": str(node.get_path())})
 	else:
 		_send_response({"error": "Unknown light_3d action: %s" % action})
@@ -4350,9 +4402,24 @@ func _cmd_ui_control(params: Dictionary) -> void:
 					return
 				ctrl.set_anchors_and_offsets_preset(preset as Control.LayoutPreset)
 				applied.append("anchor_preset")
+			if params.has("position"):
+				var p: Dictionary = params["position"]
+				ctrl.position = Vector2(float(p.get("x", 0)), float(p.get("y", 0)))
+				applied.append("position")
+			if params.has("size"):
+				var sz: Dictionary = params["size"]
+				ctrl.size = Vector2(float(sz.get("x", 0)), float(sz.get("y", 0)))
+				applied.append("size")
+			if params.has("rotation_degrees"):
+				ctrl.rotation_degrees = float(params["rotation_degrees"])
+				applied.append("rotation_degrees")
+			if params.has("scale"):
+				var sc: Dictionary = params["scale"]
+				ctrl.scale = Vector2(float(sc.get("x", 1)), float(sc.get("y", 1)))
+				applied.append("scale")
 			_send_response({"success": true, "action": "configure", "applied": applied})
 		"get_info":
-			_send_response({"success": true, "size": _variant_to_json(ctrl.size), "position": _variant_to_json(ctrl.position), "has_focus": ctrl.has_focus(), "visible": ctrl.visible, "tooltip": ctrl.tooltip_text, "mouse_filter": ctrl.mouse_filter})
+			_send_response({"success": true, "size": _variant_to_json(ctrl.size), "position": _variant_to_json(ctrl.position), "rotation_degrees": ctrl.rotation_degrees, "scale": _variant_to_json(ctrl.scale), "has_focus": ctrl.has_focus(), "visible": ctrl.visible, "tooltip": ctrl.tooltip_text, "mouse_filter": ctrl.mouse_filter})
 		_:
 			_send_response({"error": "Unknown ui_control action: %s" % action})
 

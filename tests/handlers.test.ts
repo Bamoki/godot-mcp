@@ -40,8 +40,7 @@ function fakeGameCommand(
   args: any,
   argsFn: (a: any) => Record<string, any>,
 ): { error: string | null; commandArgs: Record<string, any> | null } {
-  if (!hasActiveProcess) return { error: 'No active Godot process. Use run_project first.', commandArgs: null };
-  if (!hasConnection) return { error: 'Not connected to game interaction server.', commandArgs: null };
+  if (!hasConnection) return { error: 'Not connected to game interaction server. Use run_project or connect_game first.', commandArgs: null };
   args = normalizeParameters(args || {});
   try {
     return { error: null, commandArgs: argsFn(args) };
@@ -82,9 +81,10 @@ describe('Game command handlers — argument transforms', () => {
       expect(r.commandArgs).toEqual({ x: 100, y: 200, button: 2 });
     });
 
-    it('returns error when no active process', () => {
-      const r = fakeGameCommand(false, true, {}, argsFn);
-      expect(r.error).toContain('No active Godot process');
+    it('works without a spawned process when connected (editor-launched game)', () => {
+      const r = fakeGameCommand(false, true, { x: 10, y: 20 }, argsFn);
+      expect(r.error).toBeNull();
+      expect(r.commandArgs).toEqual({ x: 10, y: 20, button: 1 });
     });
 
     it('returns error when not connected', () => {
@@ -132,6 +132,15 @@ describe('Game command handlers — argument transforms', () => {
       const args = normalizeParameters({ code: 'get_tree().root.name' });
       const r = fakeGameCommand(true, true, args, a => ({ code: a.code }));
       expect(r.commandArgs).toEqual({ code: 'get_tree().root.name' });
+    });
+
+    it('passes timeout_ms when timeoutMs provided', () => {
+      const args = normalizeParameters({ code: 'await get_tree().create_timer(60).timeout', timeoutMs: 5000 });
+      const r = fakeGameCommand(true, true, args, a => ({
+        code: a.code,
+        ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      }));
+      expect(r.commandArgs).toEqual({ code: 'await get_tree().create_timer(60).timeout', timeout_ms: 5000 });
     });
   });
 
@@ -1006,10 +1015,15 @@ describe('Handler source structure', () => {
     }
   });
 
-  it('gameCommand checks activeProcess and gameConnection', () => {
-    // Verify the gameCommand helper has the guard checks
-    expect(sourceCode).toContain("if (!this.activeProcess) return createErrorResponse('No active Godot process");
-    expect(sourceCode).toContain("if (!this.gameConnection.connected) return createErrorResponse('Not connected");
+  it('gameCommand checks gameConnection (not activeProcess)', () => {
+    // The gate now only requires a connection so editor-launched games work.
+    expect(sourceCode).toContain("if (!this.gameConnection.connected) return createErrorResponse('Not connected to game interaction server. Use run_project or connect_game first.');");
+  });
+
+  it('connect_game is dispatched and has a handler', () => {
+    expect(sourceCode).toContain("case 'connect_game':");
+    expect(sourceCode).toContain("return await this.handleConnectGame(request.params.arguments);");
+    expect(sourceCode).toContain('private async handleConnectGame(args: any)');
   });
 
   it('headlessOp validates projectPath and checks project.godot', () => {
@@ -1575,10 +1589,27 @@ describe('Game command handlers — new tools (group, timer, particles, animatio
   });
 
   describe('handleGameLight3d', () => {
-    const argsFn = (a: any) => ({ action: a.action, ...(a.lightType ? { light_type: a.lightType } : {}) });
+    const argsFn = (a: any) => ({
+      action: a.action,
+      ...(a.lightType ? { light_type: a.lightType } : {}),
+      ...(a.size ? { size: a.size } : {}),
+      ...(a.areaAttenuation !== undefined ? { area_attenuation: a.areaAttenuation } : {}),
+      ...(a.areaRange !== undefined ? { area_range: a.areaRange } : {}),
+      ...(a.areaNormalizeEnergy !== undefined ? { area_normalize_energy: a.areaNormalizeEnergy } : {}),
+    });
     it('passes create with type', () => {
       const r = fakeGameCommand(true, true, { action: 'create', lightType: 'omni' }, argsFn);
       expect(r.commandArgs).toEqual({ action: 'create', light_type: 'omni' });
+    });
+    it('passes area params', () => {
+      const r = fakeGameCommand(true, true, {
+        action: 'create', lightType: 'area', size: { x: 4, y: 2 },
+        areaAttenuation: 0.5, areaRange: 8, areaNormalizeEnergy: true,
+      }, argsFn);
+      expect(r.commandArgs).toEqual({
+        action: 'create', light_type: 'area', size: { x: 4, y: 2 },
+        area_attenuation: 0.5, area_range: 8, area_normalize_energy: true,
+      });
     });
   });
 
@@ -1650,10 +1681,26 @@ describe('Game command handlers — new tools (group, timer, particles, animatio
 
   // --- Batch 5: UI Controls + Rendering + Resource Runtime ---
   describe('handleGameUiControl', () => {
-    const argsFn = (a: any) => ({ node_path: a.nodePath, action: a.action });
+    const argsFn = (a: any) => ({
+      node_path: a.nodePath, action: a.action,
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.size ? { size: a.size } : {}),
+      ...(a.rotation !== undefined ? { rotation_degrees: a.rotation } : {}),
+      ...(a.scale ? { scale: a.scale } : {}),
+    });
     it('passes grab_focus', () => {
       const r = fakeGameCommand(true, true, { nodePath: '/root/Btn', action: 'grab_focus' }, argsFn);
       expect(r.commandArgs).toEqual({ node_path: '/root/Btn', action: 'grab_focus' });
+    });
+    it('passes transform params on configure', () => {
+      const r = fakeGameCommand(true, true, {
+        nodePath: '/root/Panel', action: 'configure',
+        position: { x: 10, y: 20 }, size: { x: 200, y: 100 }, rotation: 45, scale: { x: 1.5, y: 1.5 },
+      }, argsFn);
+      expect(r.commandArgs).toEqual({
+        node_path: '/root/Panel', action: 'configure',
+        position: { x: 10, y: 20 }, size: { x: 200, y: 100 }, rotation_degrees: 45, scale: { x: 1.5, y: 1.5 },
+      });
     });
   });
 
@@ -1737,9 +1784,9 @@ describe('Game command handlers — visual shader, terrain, video, CI/CD', () =>
       expect(r.commandArgs).toEqual({ action: 'apply', node_path: '/root/Mesh' });
     });
 
-    it('returns error when no active process', () => {
+    it('works without a spawned process when connected (editor-launched game)', () => {
       const r = fakeGameCommand(false, true, { action: 'create' }, argsFn);
-      expect(r.error).toContain('No active Godot process');
+      expect(r.error).toBeNull();
     });
   });
 
@@ -1932,8 +1979,8 @@ describe('Tool dispatch switch statement', () => {
   it('every case returns await this.handle*', () => {
     const caseRegex = /case '(\w+)':\s*\n\s*return await this\.handle/g;
     const matches = [...sourceCode.matchAll(caseRegex)];
-    // Should match all 161 tools
-    expect(matches.length).toBe(161);
+    // Should match all 162 tools
+    expect(matches.length).toBe(162);
   });
 
   it('no case falls through without return', () => {

@@ -8,7 +8,7 @@
 [![](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white 'TypeScript')](https://www.typescriptlang.org/)
 [![](https://img.shields.io/badge/License-MIT-red.svg 'MIT License')](https://opensource.org/licenses/MIT)
 
-A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP) server that gives AI assistants **full control** over the Godot game engine. **161 tools** spanning networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, property inspection, scene manipulation, signal management, physics, project creation, and more.
+A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP) server that gives AI assistants **full control** over the Godot game engine. **162 tools** spanning networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, property inspection, scene manipulation, signal management, physics, project creation, and more.
 
 ## Acknowledgments
 
@@ -16,7 +16,16 @@ This project is built upon and extends [godot-mcp](https://github.com/Coding-Sol
 
 ## What's New (Improvements Over Original)
 
-The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **161 tools** with the following major additions:
+The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **162 tools** with the following major additions:
+
+### New in 3.3 (Reliability & workflows)
+- **`connect_game`** - Attach to an already-running game (e.g. launched from the Godot editor with F5) without `run_project` spawning the process. Game control tools now only require a live connection, not a spawned process. Auto-reconnect keeps the session alive if the game restarts or the socket drops (capped retries; stops when the game quits).
+- **`game_eval` timeout** - Eval aborts with a clear error if it exceeds `timeoutMs` (default 30s). A watchdog on the game server unblocks it in ~timeout seconds instead of leaving every game command stuck for 2 minutes after a runtime error.
+- **Server recovery** - `BUSY_TIMEOUT` lowered from 120s to 15s as a backstop, and `_handle_command` releases the busy flag if a handler aborts without responding (a script error no longer freezes the server).
+- **`game_ui_control` transforms** - Configure `position`, `size`, `rotation` (degrees), and `scale` on Controls (ignored inside Containers, which control layout).
+- **`run_project` waits for the connection** and reports whether the game is reachable instead of returning blind.
+- **`game_light_3d` area lights** now use the correct `area_size` property and support `area_normalize_energy` (the previous `.size` usage errored at runtime and wedged the server).
+- **`get_project_info`** - New internal game command exposing `project_path`, `project_name`, and `godot_version`, used by `connect_game` to confirm the target.
 
 ### New in 3.2 (Godot 4.7)
 - **`game_create_virtual_joystick`** - Create a `VirtualJoystick` touch control (new in 4.7) with configurable joystick/tip sizes, fixed/dynamic/following modes, action bindings, deadzone/clamp zones, and colors. Gated to 4.7+.
@@ -37,7 +46,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 - **Correctness and robustness fixes** across the headless scene operations and the runtime interaction server (resource-typed properties now persist, reparenting works, runtime commands are correlated by request id, and the tools survive projects with warnings-as-errors). Requires Godot 4.4 or later; tested and working with the latest Godot **4.7**.
 
 ### Runtime Code Execution
-- **`game_eval`** - Execute arbitrary GDScript code in the running game with return values
+- **`game_eval`** - Execute arbitrary GDScript code in the running game with return values (configurable `timeoutMs`, default 30s)
 - Full `await` support for async GDScript code
 - Works even when the game is paused (`PROCESS_MODE_ALWAYS`)
 
@@ -224,7 +233,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 - **PackedArray serialization** - Proper JSON arrays instead of string fallback
 - **Graceful error handling** - Scene read fallback to raw .tscn text on missing dependencies
 
-## All 161 Tools
+## All 162 Tools
 
 ### Project Management (7 tools)
 | Tool | Description |
@@ -446,9 +455,10 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 | `game_audio_bus_layout` | Create/remove/reorder audio buses and routing |
 | `game_audio_spatial` | Configure AudioStreamPlayer3D spatial properties |
 
-### Editor & Project Tools (14 tools)
+### Editor & Project Tools (15 tools)
 | Tool | Description |
 |------|-------------|
+| `connect_game` | Connect to an already-running game (editor-launched) with auto-reconnect |
 | `rename_file` | Rename or move a file within the project |
 | `manage_resource` | Read or modify .tres/.res resource files |
 | `create_script` | Create a GDScript file from a template |
@@ -467,7 +477,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 ### UI Controls (8 tools)
 | Tool | Description |
 |------|-------------|
-| `game_ui_control` | Set focus, anchors, tooltip, mouse filter on Control |
+| `game_ui_control` | Set focus, anchors, tooltip, mouse filter, position/size/rotation/scale on Control |
 | `game_ui_text` | LineEdit/TextEdit/RichTextLabel text operations |
 | `game_ui_popup` | Show/hide/popup for Popup/Dialog/Window nodes |
 | `game_ui_tree` | Tree control: get/select/collapse/add/remove items |
@@ -568,6 +578,8 @@ To use the `game_*` runtime tools, your Godot project needs the MCP interaction 
 
 The server listens on `127.0.0.1:9090` and accepts JSON commands over TCP when the game is running.
 
+> **Tip — editor workflow:** after setting up the autoload once (e.g. via `run_project`), you can launch the game yourself in the Godot editor (F5) and use `connect_game` to attach. Game tools then work on the editor-launched instance, and the MCP auto-reconnects if the game is restarted.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -596,13 +608,13 @@ The server uses two communication channels:
 
 ## Testing
 
-The project uses [Vitest](https://vitest.dev/) with 474 tests across 5 files:
+The project uses [Vitest](https://vitest.dev/) with 479 tests across 5 files:
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `tests/utils.test.ts` | 36 | Parameter mappings, normalization, path validation, error responses, version detection |
-| `tests/tool-definitions.test.ts` | 169 | All 161 tools defined, schemas valid, names unique, descriptions < 80 chars |
-| `tests/handlers.test.ts` | 237 | Game command arg transforms, required-param validation, headless op path checks, source structure |
+| `tests/tool-definitions.test.ts` | 170 | All 162 tools defined, schemas valid, names unique, descriptions < 80 chars |
+| `tests/handlers.test.ts` | 241 | Game command arg transforms, required-param validation, headless op path checks, source structure |
 | `tests/dotnet.test.ts` | 20 | .NET feature flag, .csproj generation, C# script template generation, identifier validation |
 | `tests/validate-script.test.ts` | 12 | GDScript diagnostic parsing + git-changed file collection |
 

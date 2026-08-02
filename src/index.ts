@@ -123,6 +123,9 @@ class GodotServer {
   private nextRequestId: number = 1;
   private lastErrorIndex: number = 0;
   private lastLogIndex: number = 0;
+  private manualConnect: boolean = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts: number = 0;
   private readonly INTERACTION_PORT = 9090;
   private readonly EDITOR_PORT = 9091;
   private readonly AUTOLOAD_NAME = 'McpInteractionServer';
@@ -463,20 +466,28 @@ class GodotServer {
 
   /**
    * Connect to the game's TCP interaction server with retries
+   * @param opts.initialDelayMs Initial delay before the first attempt (default 2000)
+   * @param opts.maxAttempts Max connection attempts (default 10)
+   * @param opts.retryDelayMs Delay between attempts (default 500)
+   * @returns True if the connection was established, false otherwise
    */
-  private async connectToGame(projectPath: string): Promise<void> {
+  private async connectToGame(
+    projectPath: string,
+    opts: { initialDelayMs?: number; maxAttempts?: number; retryDelayMs?: number } = {}
+  ): Promise<boolean> {
     this.gameConnection.projectPath = projectPath;
 
-    // Initial delay to let the game start up
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const initialDelayMs = opts.initialDelayMs ?? 2000;
+    const maxAttempts = opts.maxAttempts ?? 10;
+    const retryDelayMs = opts.retryDelayMs ?? 500;
 
-    const maxAttempts = 10;
-    const retryDelay = 500;
+    // Initial delay to let the game start up
+    await new Promise(resolve => setTimeout(resolve, initialDelayMs));
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (!this.activeProcess) {
+      if (this.activeProcess === null && this.manualConnect === false) {
         this.logDebug('Game process no longer running, aborting connection');
-        return;
+        return false;
       }
 
       try {
@@ -512,6 +523,7 @@ class GodotServer {
               this.gameConnection.connected = false;
               this.gameConnection.socket = null;
               this.rejectAllPending({ error: 'Connection closed' });
+              this.scheduleReconnect();
             });
 
             socket.on('error', (err: Error) => {
@@ -527,14 +539,54 @@ class GodotServer {
         });
 
         // Successfully connected
-        return;
+        return true;
       } catch (err) {
-        this.logDebug(`Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${retryDelay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        this.logDebug(`Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${retryDelayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
       }
     }
 
     console.error(`[SERVER] Failed to connect to game interaction server after ${maxAttempts} attempts`);
+    return false;
+  }
+
+  /**
+   * Automatically retry connecting to the game in the background after a drop.
+   * Only active when there is a known target: a live spawned process or a
+   * manually-connected (editor-launched) game.
+   */
+  private scheduleReconnect(): void {
+    if (this.gameConnection.connected || this.reconnectTimer !== null) return;
+    if (this.activeProcess === null && !this.manualConnect) return;
+    if (!this.gameConnection.projectPath) return;
+    if (this.reconnectAttempts >= 20) {
+      this.logDebug('Reconnect: max attempts reached, giving up');
+      this.reconnectAttempts = 0;
+      this.manualConnect = false;
+      return;
+    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnectAttempts++;
+      const target = this.gameConnection.projectPath;
+      if (!target) return;
+      this.connectToGame(target, { initialDelayMs: 0, maxAttempts: 5, retryDelayMs: 400 }).then((ok: boolean) => {
+        if (ok) {
+          this.logDebug('Reconnected to game interaction server');
+          this.reconnectAttempts = 0;
+        } else {
+          this.scheduleReconnect();
+        }
+      });
+    }, 2000);
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
   }
 
   /**
@@ -604,6 +656,8 @@ class GodotServer {
    */
   private async cleanup() {
     this.logDebug('Cleaning up resources');
+    this.manualConnect = false;
+    this.cancelReconnect();
     this.disconnectFromGame();
     if (this.gameConnection.projectPath) {
       this.removeInteractionServer(this.gameConnection.projectPath);
@@ -623,8 +677,7 @@ class GodotServer {
     argsFn: (a: any) => Record<string, any>,
     timeoutMs?: number
   ): Promise<any> {
-    if (!this.activeProcess) return createErrorResponse('No active Godot process. Use run_project first.');
-    if (!this.gameConnection.connected) return createErrorResponse('Not connected to game interaction server.');
+    if (!this.gameConnection.connected) return createErrorResponse('Not connected to game interaction server. Use run_project or connect_game first.');
     args = normalizeParameters(args || {});
     try {
       const response = await this.sendGameCommand(name, argsFn(args), timeoutMs);
@@ -899,6 +952,20 @@ class GodotServer {
             type: 'object',
             properties: {},
             required: [],
+          },
+        },
+        {
+          name: 'connect_game',
+          description: 'Connect to an already-running game (editor-launched) with auto-reconnect',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: {
+                type: 'string',
+                description: 'Godot project path (autoload must already be injected via run_project)',
+              },
+            },
+            required: ['projectPath'],
           },
         },
         {
@@ -1213,6 +1280,10 @@ class GodotServer {
               code: {
                 type: 'string',
                 description: 'GDScript code to execute. Use "return" to return values.',
+              },
+              timeoutMs: {
+                type: 'number',
+                description: 'Max eval time in ms before abort (default: 30000)',
               },
             },
             required: ['code'],
@@ -2519,6 +2590,7 @@ class GodotServer {
               size: { type: 'object', description: 'Area light size {x, y} (area only, Godot 4.7+)' },
               areaAttenuation: { type: 'number', description: 'Area light attenuation (area only, Godot 4.7+)' },
               areaRange: { type: 'number', description: 'Area light range (area only, Godot 4.7+)' },
+              areaNormalizeEnergy: { type: 'boolean', description: 'Normalize energy by area size (area only, Godot 4.7+)' },
               name: { type: 'string', description: 'Node name' },
             },
             required: ['action'],
@@ -3088,7 +3160,7 @@ class GodotServer {
         // Batch 5: UI Controls + Rendering + Resource Runtime
         {
           name: 'game_ui_control',
-          description: 'Set focus, anchors, tooltip, mouse filter on Control',
+          description: 'Configure focus, anchors, tooltip, mouse filter, and transform on a Control',
           inputSchema: {
             type: 'object',
             properties: {
@@ -3098,6 +3170,10 @@ class GodotServer {
               tooltip: { type: 'string', description: 'Tooltip text' },
               mouseFilter: { type: 'string', description: 'Mouse filter: stop, pass, ignore' },
               minSize: { type: 'object', description: 'Minimum size {x,y}' },
+              position: { type: 'object', description: 'Position {x,y} (ignored inside Containers)' },
+              size: { type: 'object', description: 'Size {x,y} (ignored inside Containers)' },
+              rotation: { type: 'number', description: 'Rotation in degrees' },
+              scale: { type: 'object', description: 'Scale {x,y}' },
             },
             required: ['nodePath', 'action'],
           },
@@ -3352,7 +3428,7 @@ class GodotServer {
               actionDown: { type: 'string', description: 'Action for down direction (default: ui_down)' },
               actionLeft: { type: 'string', description: 'Action for left direction (default: ui_left)' },
               actionRight: { type: 'string', description: 'Action for right direction (default: ui_right)' },
-              deadzoneRatio: { type: 'number', description: 'Deadzone as ratio of joystick size (default: 0.2)' },
+              deadzoneRatio: { type: 'number', description: 'Deadzone as ratio of joystick size (default: 0.0)' },
               clampzoneRatio: { type: 'number', description: 'Clamp zone as multiplier of radius (default: 1.0)' },
               initialOffsetRatio: { type: 'object', description: 'Initial position as ratio of control size {x, y} (default: {0.5, 0.5})' },
               color: { type: 'object', description: 'Joystick color {r,g,b,a} (default: white 0.35 alpha)' },
@@ -3427,6 +3503,8 @@ class GodotServer {
           return await this.handleGetDebugOutput();
         case 'stop_project':
           return await this.handleStopProject();
+        case 'connect_game':
+          return await this.handleConnectGame(request.params.arguments);
         case 'get_godot_version':
           return await this.handleGetGodotVersion();
         case 'list_projects':
@@ -3918,6 +3996,8 @@ class GodotServer {
 
       process.on('exit', (code: number | null) => {
         this.logDebug(`Godot process exited with code ${code}`);
+        this.manualConnect = false;
+        this.cancelReconnect();
         this.disconnectFromGame();
         if (this.gameConnection.projectPath) {
           this.removeInteractionServer(this.gameConnection.projectPath);
@@ -3937,16 +4017,17 @@ class GodotServer {
 
       this.activeProcess = { process, output, errors };
 
-      // Start async TCP connection to the interaction server (fire-and-forget)
-      this.connectToGame(args.projectPath).catch(err => {
-        this.logDebug(`Failed to connect to game interaction server: ${err}`);
-      });
+      // Wait for the interaction server connection (with retries) so the caller
+      // immediately knows whether the game is reachable.
+      this.manualConnect = false;
+      this.cancelReconnect();
+      const connected = await this.connectToGame(args.projectPath);
 
       return {
         content: [
           {
             type: 'text',
-            text: `Godot project started in debug mode. Use get_debug_output to see output. Game interaction server connecting on port ${this.INTERACTION_PORT}...`,
+            text: `Godot project started in debug mode. Use get_debug_output to see output. Connected to game interaction server on port ${this.INTERACTION_PORT}: ${connected}.`,
           },
         ],
       };
@@ -3996,6 +4077,8 @@ class GodotServer {
     }
 
     this.logDebug('Stopping active Godot process');
+    this.manualConnect = false;
+    this.cancelReconnect();
     this.disconnectFromGame();
     this.activeProcess.process.kill();
     const output = this.activeProcess.output;
@@ -4019,6 +4102,68 @@ class GodotServer {
               message: 'Godot project stopped',
               finalOutput: output,
               finalErrors: errors,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle the connect_game tool
+   * Attaches to an already-running game (e.g. launched from the editor) so the
+   * game control tools work without run_project having spawned the process.
+   */
+  private async handleConnectGame(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.projectPath) return createErrorResponse('projectPath is required.');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!existsSync(join(args.projectPath, 'project.godot'))) {
+      return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
+    }
+
+    // If a spawned process is alive, we keep tracking it; otherwise this is an
+    // external (e.g. editor-launched) game, so enable auto-reconnect for it.
+    const spawnedAlive = this.activeProcess !== null;
+    this.manualConnect = !spawnedAlive;
+    this.cancelReconnect();
+
+    const connected = await this.connectToGame(args.projectPath, { maxAttempts: 15 });
+    if (!connected) {
+      this.manualConnect = false;
+      return createErrorResponse(
+        `Could not connect to a running game on port ${this.INTERACTION_PORT}. ` +
+        'Make sure the game is running (run_project or launch it from the Godot editor) ' +
+        'and that the project was set up with run_project at least once (so the interaction server autoload is present).'
+      );
+    }
+
+    // Ask the game for its real project path/version to confirm the target.
+    let gameProjectPath: string | null = args.projectPath;
+    let gameVersion: string | null = null;
+    try {
+      const resp = await this.sendGameCommand('get_project_info', {}, 5000);
+      if (resp && resp.success) {
+        if (resp.project_path) gameProjectPath = resp.project_path;
+        if (resp.godot_version) gameVersion = resp.godot_version;
+      }
+    } catch (error: any) {
+      this.logDebug(`get_project_info failed: ${error?.message}`);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              connected: true,
+              port: this.INTERACTION_PORT,
+              projectPath: gameProjectPath,
+              godotVersion: gameVersion,
+              note: 'Auto-reconnect is enabled while the game stays up.',
             },
             null,
             2
@@ -4772,7 +4917,13 @@ class GodotServer {
   private async handleGameEval(args: any) {
     args = normalizeParameters(args || {});
     if (!args.code) return createErrorResponse('code parameter is required.');
-    return this.gameCommand('eval', args, a => ({ code: a.code }), 30000);
+    const timeoutMs = args.timeoutMs !== undefined
+      ? Math.max(1000, Math.min(Math.round(args.timeoutMs), 120000))
+      : 30000;
+    return this.gameCommand('eval', args, a => ({
+      code: a.code,
+      ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+    }), timeoutMs + 2000);
   }
 
   private async handleGameGetProperty(args: any) {
@@ -6148,6 +6299,7 @@ class GodotServer {
       ...(a.size ? { size: a.size } : {}),
       ...(a.areaAttenuation !== undefined ? { area_attenuation: a.areaAttenuation } : {}),
       ...(a.areaRange !== undefined ? { area_range: a.areaRange } : {}),
+      ...(a.areaNormalizeEnergy !== undefined ? { area_normalize_energy: a.areaNormalizeEnergy } : {}),
       ...(a.name ? { name: a.name } : {}),
     }));
   }
@@ -6918,6 +7070,10 @@ class GodotServer {
       ...(a.tooltip ? { tooltip: a.tooltip } : {}),
       ...(a.mouseFilter ? { mouse_filter: a.mouseFilter } : {}),
       ...(a.minSize ? { min_size: a.minSize } : {}),
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.size ? { size: a.size } : {}),
+      ...(a.rotation !== undefined ? { rotation_degrees: a.rotation } : {}),
+      ...(a.scale ? { scale: a.scale } : {}),
     }));
   }
 

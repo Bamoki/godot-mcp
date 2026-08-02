@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const ALL_TOOL_NAMES = [
-  'launch_editor', 'run_project', 'get_debug_output', 'stop_project',
+  'launch_editor', 'run_project', 'get_debug_output', 'stop_project', 'connect_game',
   'get_godot_version', 'list_projects', 'get_project_info', 'create_scene',
   'add_node', 'load_sprite', 'export_mesh_library', 'save_scene',
   'get_uid', 'update_project_uids', 'game_screenshot', 'game_click',
@@ -73,8 +73,8 @@ beforeAll(() => {
 });
 
 describe('Tool definitions', () => {
-  it('defines exactly 161 tools', () => {
-    expect(ALL_TOOL_NAMES).toHaveLength(161);
+  it('defines exactly 162 tools', () => {
+    expect(ALL_TOOL_NAMES).toHaveLength(162);
   });
 
   it('all tool names are unique', () => {
