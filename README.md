@@ -8,7 +8,7 @@
 [![](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white 'TypeScript')](https://www.typescriptlang.org/)
 [![](https://img.shields.io/badge/License-MIT-red.svg 'MIT License')](https://opensource.org/licenses/MIT)
 
-A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP) server that gives AI assistants **full control** over the Godot game engine. **157 tools** spanning networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, property inspection, scene manipulation, signal management, physics, project creation, and more.
+A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/introduction) (MCP) server that gives AI assistants **full control** over the Godot game engine. **161 tools** spanning networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, property inspection, scene manipulation, signal management, physics, project creation, and more.
 
 ## Acknowledgments
 
@@ -16,7 +16,16 @@ This project is built upon and extends [godot-mcp](https://github.com/Coding-Sol
 
 ## What's New (Improvements Over Original)
 
-The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **157 tools** with the following major additions:
+The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **161 tools** with the following major additions:
+
+### New in 3.2 (Godot 4.7)
+- **`game_create_virtual_joystick`** - Create a `VirtualJoystick` touch control (new in 4.7) with configurable joystick/tip sizes, fixed/dynamic/following modes, action bindings, deadzone/clamp zones, and colors. Gated to 4.7+.
+- **`game_draw_texture`** - Draw onto a `DrawableTexture2D` (new in 4.7) attached to any node: `setup`, `clear`, `draw_rect`, `draw_circle`, `draw_line`, `draw_text`, and `save` (PNG). Drawing is rasterized on a CPU-side mirror, so `save` and compositing work even in `--headless` mode; `draw_text` requires a real renderer (returns a clear error headless).
+- **`restart_editor`** - Restart the Godot editor. Uses `EditorInterface.restart_editor(save)` via the bundled editor plugin (TCP 9091) when installed; falls back to killing and respawning the editor process tracked by `launch_editor`.
+- **`manage_editor_plugin`** - Install/uninstall/check the `godot_mcp_editor` plugin (`addons/godot_mcp_editor`), which exposes an editor-side TCP server (127.0.0.1:9091) with commands such as `restart_editor`, `save_all_scenes`, `get_open_scenes`, `play_main_scene`, `set_plugin_enabled`, `rescan`, and `eval` (run GDScript inside the editor).
+- **`game_light_3d` area lights** - `light_type: area` creates an `AreaLight3D` with `size`, `area_attenuation`, and `area_range` (4.7+).
+- **HDR output** - `game_render_settings` and `game_window` can enable `hdr_2d` and `hdr_output_requested`, and read `get_output_max_linear_value()` when running 4.7+.
+- **Feature detection** - New projects pin their real installed Godot version as the `config/features` entry; version-gated behavior uses `isGodot47OrLater` / `isGodotVersionAtLeast` helpers (a `4.7.1.stable.steam.*` version string normalizes to `4.7`).
 
 ### New in 3.1
 - **`validate_script` autoload resolution** - Script validation now compiles the target through a `SceneTree` at `_initialize()` (after project autoloads are registered) instead of `--check-only` at `_init()`. References to autoload singletons no longer produce false `Identifier not found` errors, while real syntax/type errors are still caught. Verified building a full game whose scripts reference several autoloads.
@@ -215,7 +224,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 - **PackedArray serialization** - Proper JSON arrays instead of string fallback
 - **Graceful error handling** - Scene read fallback to raw .tscn text on missing dependencies
 
-## All 157 Tools
+## All 161 Tools
 
 ### Project Management (7 tools)
 | Tool | Description |
@@ -470,8 +479,16 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 ### Rendering & Resources (2 tools)
 | Tool | Description |
 |------|-------------|
-| `game_render_settings` | Get/set MSAA, FXAA, TAA, scaling mode/scale |
+| `game_render_settings` | Get/set MSAA, FXAA, TAA, scaling mode/scale (plus HDR in 4.7+) |
 | `game_resource` | Runtime resource load, save, or preload |
+
+### Godot 4.7 Features (4 tools)
+| Tool | Description |
+|------|-------------|
+| `game_create_virtual_joystick` | Create a VirtualJoystick touch control (4.7+) |
+| `game_draw_texture` | Draw onto a DrawableTexture2D (4.7+) |
+| `restart_editor` | Restart the Godot editor (EditorInterface or process-level) |
+| `manage_editor_plugin` | Install/uninstall/check the editor plugin (TCP 9091) |
 
 ## Requirements
 
@@ -579,13 +596,13 @@ The server uses two communication channels:
 
 ## Testing
 
-The project uses [Vitest](https://vitest.dev/) with 446 tests across 5 files:
+The project uses [Vitest](https://vitest.dev/) with 474 tests across 5 files:
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `tests/utils.test.ts` | 31 | Parameter mappings, normalization, path validation, error responses, version detection |
-| `tests/tool-definitions.test.ts` | 163 | All 155 tools defined, schemas valid, names unique, descriptions < 80 chars |
-| `tests/handlers.test.ts` | 225 | Game command arg transforms, required-param validation, headless op path checks, source structure |
+| `tests/utils.test.ts` | 36 | Parameter mappings, normalization, path validation, error responses, version detection |
+| `tests/tool-definitions.test.ts` | 169 | All 161 tools defined, schemas valid, names unique, descriptions < 80 chars |
+| `tests/handlers.test.ts` | 237 | Game command arg transforms, required-param validation, headless op path checks, source structure |
 | `tests/dotnet.test.ts` | 20 | .NET feature flag, .csproj generation, C# script template generation, identifier validation |
 | `tests/validate-script.test.ts` | 12 | GDScript diagnostic parsing + git-changed file collection |
 
@@ -645,4 +662,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Credits
 
 - **Original project**: [godot-mcp](https://github.com/Coding-Solo/godot-mcp) by [Solomon Elias (Coding-Solo)](https://github.com/Coding-Solo) - provided the foundational MCP server architecture, headless operations system, and TCP interaction framework
-- **Extended by**: [Tugcan Topaloglu](https://github.com/tugcantopaloglu) - extended to 157 tools covering networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, node manipulation, signals, project creation, camera control, physics, and comprehensive type conversion
+- **Extended by**: [Tugcan Topaloglu](https://github.com/tugcantopaloglu) - extended to 161 tools covering networking, 3D/2D rendering, UI controls, audio effects, animation trees, file I/O, runtime code execution, node manipulation, signals, project creation, camera control, physics, Godot 4.7 features, and comprehensive type conversion

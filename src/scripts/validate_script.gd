@@ -34,6 +34,13 @@ func _initialize():
 	# CACHE_MODE_IGNORE forces a fresh parse/analyze/compile pass instead of
 	# reusing whatever ResourceCache entry autoload bootstrap may have left
 	# behind for this same path, so we always check the current file content.
-	ResourceLoader.load(target, "GDScript", ResourceLoader.CACHE_MODE_IGNORE)
+	var script: Resource = ResourceLoader.load(target, "GDScript", ResourceLoader.CACHE_MODE_IGNORE)
+
+	if script == null:
+		# The engine prints the underlying SCRIPT ERROR to stderr; surface a
+		# non-zero exit so CI and tooling can detect the failure reliably.
+		printerr("SCRIPT ERROR: failed to load %s (see parse errors above)" % target)
+		quit(1)
+		return
 
 	quit()

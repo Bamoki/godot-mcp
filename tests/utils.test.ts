@@ -7,6 +7,7 @@ import {
   validatePath,
   createErrorResponse,
   isGodot44OrLater,
+  isGodot47OrLater,
 } from '../src/utils.js';
 
 describe('PARAMETER_MAPPINGS', () => {
@@ -223,5 +224,34 @@ describe('isGodot44OrLater', () => {
   it('handles version strings with extra info', () => {
     expect(isGodot44OrLater('4.4.1.stable')).toBe(true);
     expect(isGodot44OrLater('4.3.2.rc1')).toBe(false);
+  });
+});
+
+describe('isGodot47OrLater', () => {
+  it('returns true for 4.7', () => {
+    expect(isGodot47OrLater('4.7.0')).toBe(true);
+    expect(isGodot47OrLater('4.7')).toBe(true);
+  });
+
+  it('returns true for versions after 4.7', () => {
+    expect(isGodot47OrLater('4.8.0')).toBe(true);
+    expect(isGodot47OrLater('5.0.0')).toBe(true);
+    expect(isGodot47OrLater('4.10.1')).toBe(true);
+  });
+
+  it('returns false for versions before 4.7', () => {
+    expect(isGodot47OrLater('4.6.4')).toBe(false);
+    expect(isGodot47OrLater('4.4.0')).toBe(false);
+    expect(isGodot47OrLater('3.5.0')).toBe(false);
+  });
+
+  it('returns false for non-matching strings', () => {
+    expect(isGodot47OrLater('')).toBe(false);
+    expect(isGodot47OrLater('invalid')).toBe(false);
+  });
+
+  it('handles version strings with extra info', () => {
+    expect(isGodot47OrLater('4.7.1.stable.steam.a13da4feb')).toBe(true);
+    expect(isGodot47OrLater('4.6.4.stable')).toBe(false);
   });
 });

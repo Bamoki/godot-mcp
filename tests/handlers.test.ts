@@ -1932,8 +1932,8 @@ describe('Tool dispatch switch statement', () => {
   it('every case returns await this.handle*', () => {
     const caseRegex = /case '(\w+)':\s*\n\s*return await this\.handle/g;
     const matches = [...sourceCode.matchAll(caseRegex)];
-    // Should match all 157 tools
-    expect(matches.length).toBe(157);
+    // Should match all 161 tools
+    expect(matches.length).toBe(161);
   });
 
   it('no case falls through without return', () => {
@@ -1945,5 +1945,135 @@ describe('Tool dispatch switch statement', () => {
     const caseStatements = switchBlock.match(/case '[^']+'/g) || [];
     const returnStatements = switchBlock.match(/return await/g) || [];
     expect(returnStatements.length).toBe(caseStatements.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Batch 7: Godot 4.7 feature handlers
+// ---------------------------------------------------------------------------
+describe('Batch 7: Godot 4.7 feature handlers', () => {
+  describe('handleGameCreateVirtualJoystick argument transform', () => {
+    const argsFn = (a: any) => ({
+      ...(a.parentPath ? { parent_path: a.parentPath } : {}),
+      ...(a.name ? { name: a.name } : {}),
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.joystickSize !== undefined ? { joystick_size: a.joystickSize } : {}),
+      ...(a.tipSize !== undefined ? { tip_size: a.tipSize } : {}),
+      ...(a.joystickMode !== undefined ? { joystick_mode: a.joystickMode } : {}),
+      ...(a.visibilityMode !== undefined ? { visibility_mode: a.visibilityMode } : {}),
+      ...(a.actionUp ? { action_up: a.actionUp } : {}),
+      ...(a.actionDown ? { action_down: a.actionDown } : {}),
+      ...(a.actionLeft ? { action_left: a.actionLeft } : {}),
+      ...(a.actionRight ? { action_right: a.actionRight } : {}),
+      ...(a.deadzoneRatio !== undefined ? { deadzone_ratio: a.deadzoneRatio } : {}),
+      ...(a.clampzoneRatio !== undefined ? { clampzone_ratio: a.clampzoneRatio } : {}),
+      ...(a.initialOffsetRatio ? { initial_offset_ratio: a.initialOffsetRatio } : {}),
+      ...(a.color ? { color: a.color } : {}),
+      ...(a.tipColor ? { tip_color: a.tipColor } : {}),
+    });
+
+    it('maps camelCase params to snake_case', () => {
+      const r = fakeGameCommand(true, true, {
+        parentPath: '/root', name: 'Stick', joystickSize: 128, tipSize: 64,
+        joystickMode: 1, visibilityMode: 1, actionUp: 'move_up',
+        deadzoneRatio: 0.15, clampzoneRatio: 0.9, color: { r: 1, g: 0, b: 0, a: 0.4 },
+      }, argsFn);
+      expect(r.error).toBeNull();
+      expect(r.commandArgs).toEqual({
+        parent_path: '/root', name: 'Stick', joystick_size: 128, tip_size: 64,
+        joystick_mode: 1, visibility_mode: 1, action_up: 'move_up',
+        deadzone_ratio: 0.15, clampzone_ratio: 0.9, color: { r: 1, g: 0, b: 0, a: 0.4 },
+      });
+    });
+
+    it('omits unset optional params', () => {
+      const r = fakeGameCommand(true, true, {}, argsFn);
+      expect(r.error).toBeNull();
+      expect(r.commandArgs).toEqual({});
+    });
+  });
+
+  describe('handleGameDrawTexture argument transform', () => {
+    const argsFn = (a: any) => ({
+      node_path: a.nodePath, action: a.action,
+      ...(a.width !== undefined ? { width: a.width } : {}),
+      ...(a.height !== undefined ? { height: a.height } : {}),
+      ...(a.fillColor ? { fill_color: a.fillColor } : {}),
+      ...(a.rect ? { rect: a.rect } : {}),
+      ...(a.color ? { color: a.color } : {}),
+      ...(a.filled !== undefined ? { filled: a.filled } : {}),
+      ...(a.center ? { center: a.center } : {}),
+      ...(a.radius !== undefined ? { radius: a.radius } : {}),
+      ...(a.from ? { from: a.from } : {}),
+      ...(a.to ? { to: a.to } : {}),
+      ...(a.widthPx !== undefined ? { width_px: a.widthPx } : {}),
+      ...(a.text ? { text: a.text } : {}),
+      ...(a.fontSize !== undefined ? { font_size: a.fontSize } : {}),
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.path ? { path: a.path } : {}),
+    });
+
+    it('maps draw params to snake_case', () => {
+      const r = fakeGameCommand(true, true, {
+        nodePath: '/root/Canvas/TextureRect', action: 'draw_rect',
+        width: 256, height: 128, rect: { x: 0, y: 0, w: 10, h: 10 },
+        color: { r: 1, g: 1, b: 1, a: 1 }, widthPx: 4, position: { x: 5, y: 5 },
+      }, argsFn);
+      expect(r.error).toBeNull();
+      expect(r.commandArgs).toEqual({
+        node_path: '/root/Canvas/TextureRect', action: 'draw_rect',
+        width: 256, height: 128, rect: { x: 0, y: 0, w: 10, h: 10 },
+        color: { r: 1, g: 1, b: 1, a: 1 }, width_px: 4, position: { x: 5, y: 5 },
+      });
+    });
+
+    it('requires nodePath and action in the handler', () => {
+      expect(sourceCode).toContain("!args.nodePath || !args.action");
+      expect(sourceCode).toContain("'nodePath and action are required.'");
+    });
+  });
+
+  describe('restart_editor', () => {
+    it('prefers the editor plugin path via sendEditorCommand', () => {
+      expect(sourceCode).toContain("sendEditorCommand('restart_editor'");
+    });
+
+    it('falls back to killing and respawning the tracked editor process', () => {
+      expect(sourceCode).toContain('this.editorProcess.process.kill()');
+      expect(sourceCode).toContain("spawn(this.godotPath, ['-e', '--path'");
+    });
+
+    it('is gated by project.godot existence', () => {
+      expect(sourceCode).toContain('Not a valid Godot project');
+    });
+  });
+
+  describe('manage_editor_plugin', () => {
+    it('implements install/uninstall/status actions', () => {
+      expect(sourceCode).toContain("action === 'install'");
+      expect(sourceCode).toContain("action === 'uninstall'");
+      expect(sourceCode).toContain("action === 'status'");
+    });
+
+    it('writes plugin files into addons/godot_mcp_editor', () => {
+      expect(sourceCode).toContain("'addons/godot_mcp_editor'");
+      expect(sourceCode).toContain('plugin.cfg');
+      expect(sourceCode).toContain('editor_plugin.gd');
+    });
+
+    it('toggles the plugin in project.godot [editor_plugins]', () => {
+      expect(sourceCode).toContain('[editor_plugins]');
+    });
+  });
+
+  describe('editor TCP server', () => {
+    it('listens on port 9091', () => {
+      expect(sourceCode).toContain('EDITOR_PORT = 9091');
+      expect(sourceCode).toContain("port: this.EDITOR_PORT");
+    });
+
+    it('sends newline-delimited JSON', () => {
+      expect(sourceCode).toContain("JSON.stringify({ command, params }) + '\\n'");
+    });
   });
 });

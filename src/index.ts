@@ -9,7 +9,7 @@
 
 import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize, resolve, relative, isAbsolute } from 'path';
-import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { createConnection, Socket } from 'net';
@@ -31,6 +31,7 @@ import {
   validatePath,
   createErrorResponse,
   isGodot44OrLater,
+  isGodot47OrLater,
   generateGodotProjectFeatures,
   generateCsprojContent,
   generateCsharpScriptSource,
@@ -104,6 +105,8 @@ class GodotServer {
   private server: Server;
   private activeProcess: GodotProcess | null = null;
   private godotPath: string | null = null;
+  private editorProcess: GodotProcess | null = null;
+  private godotVersion: string | null = null;
   private operationsScriptPath: string;
   private interactionScriptPath: string;
   private validateScriptPath: string;
@@ -121,7 +124,9 @@ class GodotServer {
   private lastErrorIndex: number = 0;
   private lastLogIndex: number = 0;
   private readonly INTERACTION_PORT = 9090;
+  private readonly EDITOR_PORT = 9091;
   private readonly AUTOLOAD_NAME = 'McpInteractionServer';
+  private readonly EDITOR_ADDON_DIR = 'addons/godot_mcp_editor';
 
   constructor(config?: GodotServerConfig) {
     // Apply configuration if provided
@@ -234,7 +239,8 @@ class GodotServer {
 
       // Try to execute Godot with --version flag
       // Using execFileAsync with argument array to prevent command injection
-      await execFileAsync(path, ['--version']);
+      const { stdout } = await execFileAsync(path, ['--version']);
+      this.godotVersion = stdout.trim();
 
       this.logDebug(`Valid Godot path: ${path}`);
       this.validatedPaths.set(path, true);
@@ -244,6 +250,24 @@ class GodotServer {
       this.validatedPaths.set(path, false);
       return false;
     }
+  }
+
+  /**
+   * Get the installed Godot version (cached after first detection)
+   */
+  private async getGodotVersionString(): Promise<string | null> {
+    if (this.godotVersion) return this.godotVersion;
+    if (!this.godotPath) {
+      await this.detectGodotPath();
+    }
+    if (!this.godotPath) return null;
+    try {
+      const { stdout } = await execFileAsync(this.godotPath, ['--version']);
+      this.godotVersion = stdout.trim();
+    } catch {
+      return null;
+    }
+    return this.godotVersion;
   }
 
   /**
@@ -2358,7 +2382,7 @@ class GodotServer {
         },
         {
           name: 'game_window',
-          description: 'Get/set window size, fullscreen, title, position',
+          description: 'Get/set window size, fullscreen, title, position, HDR output (4.7+)',
           inputSchema: {
             type: 'object',
             properties: {
@@ -2370,6 +2394,7 @@ class GodotServer {
               title: { type: 'string', description: 'Window title' },
               position: { type: 'object', description: 'Window position {x, y}' },
               vsync: { type: 'boolean', description: 'Enable vsync' },
+              hdrOutput: { type: 'boolean', description: 'Request HDR output (Godot 4.7+)' },
             },
             required: [],
           },
@@ -2478,19 +2503,22 @@ class GodotServer {
         },
         {
           name: 'game_light_3d',
-          description: 'Create/configure 3D lights (directional/omni/spot)',
+          description: 'Create/configure 3D lights (directional/omni/spot/area)',
           inputSchema: {
             type: 'object',
             properties: {
               parentPath: { type: 'string', description: 'Parent node path' },
               action: { type: 'string', description: 'Action: create or configure' },
-              lightType: { type: 'string', description: 'Type: directional, omni, spot' },
+              lightType: { type: 'string', description: 'Type: directional, omni, spot, area (area requires Godot 4.7+)' },
               nodePath: { type: 'string', description: 'Node path (for configure)' },
               color: { type: 'object', description: 'Light color {r,g,b}' },
               energy: { type: 'number', description: 'Light energy/intensity' },
               range: { type: 'number', description: 'Light range (omni/spot)' },
               shadows: { type: 'boolean', description: 'Enable shadow casting' },
               spotAngle: { type: 'number', description: 'Spot cone angle in degrees' },
+              size: { type: 'object', description: 'Area light size {x, y} (area only, Godot 4.7+)' },
+              areaAttenuation: { type: 'number', description: 'Area light attenuation (area only, Godot 4.7+)' },
+              areaRange: { type: 'number', description: 'Area light range (area only, Godot 4.7+)' },
               name: { type: 'string', description: 'Node name' },
             },
             required: ['action'],
@@ -3183,7 +3211,7 @@ class GodotServer {
         },
         {
           name: 'game_render_settings',
-          description: 'Get/set MSAA, FXAA, TAA, scaling mode/scale',
+          description: 'Get/set MSAA, FXAA, TAA, scaling mode/scale, HDR output (4.7+)',
           inputSchema: {
             type: 'object',
             properties: {
@@ -3194,6 +3222,8 @@ class GodotServer {
               taa: { type: 'boolean', description: 'Enable TAA' },
               scalingMode: { type: 'number', description: 'Scaling mode (0=bilinear, 1=FSR1, 2=FSR2)' },
               scalingScale: { type: 'number', description: 'Render scale (0.0-1.0)' },
+              hdr2d: { type: 'boolean', description: 'Enable HDR 2D on the viewport (Godot 4.7+)' },
+              hdrOutput: { type: 'boolean', description: 'Request HDR output on the window (Godot 4.7+)' },
             },
             required: [],
           },
@@ -3302,6 +3332,84 @@ class GodotServer {
               baseImage: { type: 'string', description: 'Base Docker image (default: ubuntu:22.04)' },
             },
             required: ['projectPath', 'action'],
+          },
+        },
+        // Batch 7: Godot 4.7 features
+        {
+          name: 'game_create_virtual_joystick',
+          description: 'Create a VirtualJoystick touch control (Godot 4.7+)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              parentPath: { type: 'string', description: 'Parent node path (default: /root)' },
+              name: { type: 'string', description: 'Node name (default: VirtualJoystick)' },
+              position: { type: 'object', description: 'Position {x, y} of the joystick center' },
+              joystickSize: { type: 'number', description: 'Joystick size in pixels (default: 100)' },
+              tipSize: { type: 'number', description: 'Joystick tip size in pixels (default: 50)' },
+              joystickMode: { type: 'number', description: 'Mode: 0=fixed, 1=dynamic, 2=following (default: 0)' },
+              visibilityMode: { type: 'number', description: 'Visibility: 0=always, 1=when touched (default: 0)' },
+              actionUp: { type: 'string', description: 'Action for up direction (default: ui_up)' },
+              actionDown: { type: 'string', description: 'Action for down direction (default: ui_down)' },
+              actionLeft: { type: 'string', description: 'Action for left direction (default: ui_left)' },
+              actionRight: { type: 'string', description: 'Action for right direction (default: ui_right)' },
+              deadzoneRatio: { type: 'number', description: 'Deadzone as ratio of joystick size (default: 0.2)' },
+              clampzoneRatio: { type: 'number', description: 'Clamp zone as multiplier of radius (default: 1.0)' },
+              initialOffsetRatio: { type: 'object', description: 'Initial position as ratio of control size {x, y} (default: {0.5, 0.5})' },
+              color: { type: 'object', description: 'Joystick color {r,g,b,a} (default: white 0.35 alpha)' },
+              tipColor: { type: 'object', description: 'Joystick tip color {r,g,b,a} (default: white 0.5 alpha)' },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'game_draw_texture',
+          description: 'Draw onto a DrawableTexture2D attached to a node (Godot 4.7+)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              nodePath: { type: 'string', description: 'Path to node with a texture property (TextureRect, Sprite2D, etc.)' },
+              action: { type: 'string', description: 'Action: setup, clear, draw_rect, draw_circle, draw_line, draw_text, save' },
+              width: { type: 'number', description: 'Texture width in pixels (for setup)' },
+              height: { type: 'number', description: 'Texture height in pixels (for setup)' },
+              fillColor: { type: 'object', description: 'Initial/fill color {r,g,b,a} (for setup/clear)' },
+              rect: { type: 'object', description: 'Rectangle {x, y, w, h} (for draw_rect/clear)' },
+              color: { type: 'object', description: 'Draw color {r,g,b,a}' },
+              filled: { type: 'boolean', description: 'Fill the shape (draw_rect/draw_circle). Default: true' },
+              center: { type: 'object', description: 'Circle center {x, y} (for draw_circle)' },
+              radius: { type: 'number', description: 'Circle radius (for draw_circle)' },
+              from: { type: 'object', description: 'Line start {x, y} (for draw_line)' },
+              to: { type: 'object', description: 'Line end {x, y} (for draw_line)' },
+              widthPx: { type: 'number', description: 'Line width in pixels (for draw_line). Default: 2' },
+              text: { type: 'string', description: 'Text to draw (for draw_text)' },
+              fontSize: { type: 'number', description: 'Text font size (for draw_text). Default: 16' },
+              position: { type: 'object', description: 'Text baseline position {x, y} (for draw_text)' },
+              path: { type: 'string', description: 'res:// path to save the texture as a PNG (for save)' },
+            },
+            required: ['nodePath', 'action'],
+          },
+        },
+        {
+          name: 'restart_editor',
+          description: 'Restart the Godot editor (uses EditorInterface when plugin active)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Absolute path to the Godot project' },
+              save: { type: 'boolean', description: 'Save all open scenes before restarting. Default: true' },
+            },
+            required: ['projectPath'],
+          },
+        },
+        {
+          name: 'manage_editor_plugin',
+          description: 'Install/uninstall/check the Godot MCP editor plugin (TCP 9091)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Absolute path to the Godot project' },
+              action: { type: 'string', description: 'Action: install, uninstall, or status. Default: status' },
+            },
+            required: ['projectPath'],
           },
         },
       ],
@@ -3643,6 +3751,15 @@ class GodotServer {
           return await this.handleManageCiPipeline(request.params.arguments);
         case 'manage_docker_export':
           return await this.handleManageDockerExport(request.params.arguments);
+        // Batch 7: Godot 4.7 features
+        case 'game_create_virtual_joystick':
+          return await this.handleGameCreateVirtualJoystick(request.params.arguments);
+        case 'game_draw_texture':
+          return await this.handleGameDrawTexture(request.params.arguments);
+        case 'restart_editor':
+          return await this.handleRestartEditor(request.params.arguments);
+        case 'manage_editor_plugin':
+          return await this.handleManageEditorPlugin(request.params.arguments);
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -3699,6 +3816,14 @@ class GodotServer {
       process.on('error', (err: Error) => {
         console.error('Failed to start Godot editor:', err);
       });
+
+      process.on('exit', () => {
+        if (this.editorProcess?.process === process) {
+          this.editorProcess = null;
+        }
+      });
+
+      this.editorProcess = { process, output: [], errors: [] };
 
       return {
         content: [
@@ -5212,7 +5337,8 @@ class GodotServer {
         return createErrorResponse('A project.godot already exists at this path.');
       const isDotnet = args.dotnet === true;
       const assemblyName = toDotnetIdentifier(args.projectName);
-      const features = generateGodotProjectFeatures(isDotnet);
+      const installedVersion = (await this.getGodotVersionString()) || '4.4';
+      const features = generateGodotProjectFeatures(isDotnet, installedVersion);
       let content = `; Engine configuration file.\n; Generated by Godot MCP.\n\nconfig_version=5\n\n[application]\n\nconfig/name="${args.projectName}"\nconfig/features=${features}\n`;
       if (isDotnet) {
         content += `\n[dotnet]\n\nproject/assembly_name="${assemblyName}"\n`;
@@ -5902,6 +6028,14 @@ class GodotServer {
 
   private async handleGameWindow(args: any) {
     args = normalizeParameters(args || {});
+    if (args.hdrOutput !== undefined) {
+      const version = await this.getGodotVersionString();
+      if (!version || !isGodot47OrLater(version)) {
+        return createErrorResponse(
+          `HDR output requires Godot 4.7 or later. Current version: ${version || 'unknown'}`
+        );
+      }
+    }
     return this.gameCommand('window', args, a => ({
       action: a.action || 'get',
       ...(a.width !== undefined ? { width: a.width } : {}),
@@ -5911,6 +6045,7 @@ class GodotServer {
       ...(a.title ? { title: a.title } : {}),
       ...(a.position ? { position: a.position } : {}),
       ...(a.vsync !== undefined ? { vsync: a.vsync } : {}),
+      ...(a.hdrOutput !== undefined ? { hdr_output_requested: a.hdrOutput } : {}),
     }));
   }
 
@@ -5992,6 +6127,14 @@ class GodotServer {
   private async handleGameLight3d(args: any) {
     args = normalizeParameters(args || {});
     if (!args.action) return createErrorResponse('action is required.');
+    if (args.lightType === 'area') {
+      const version = await this.getGodotVersionString();
+      if (!version || !isGodot47OrLater(version)) {
+        return createErrorResponse(
+          `AreaLight3D requires Godot 4.7 or later. Current version: ${version || 'unknown'}`
+        );
+      }
+    }
     return this.gameCommand('light_3d', args, a => ({
       action: a.action,
       ...(a.parentPath ? { parent_path: a.parentPath } : {}),
@@ -6002,6 +6145,9 @@ class GodotServer {
       ...(a.range !== undefined ? { range: a.range } : {}),
       ...(a.shadows !== undefined ? { shadows: a.shadows } : {}),
       ...(a.spotAngle !== undefined ? { spot_angle: a.spotAngle } : {}),
+      ...(a.size ? { size: a.size } : {}),
+      ...(a.areaAttenuation !== undefined ? { area_attenuation: a.areaAttenuation } : {}),
+      ...(a.areaRange !== undefined ? { area_range: a.areaRange } : {}),
       ...(a.name ? { name: a.name } : {}),
     }));
   }
@@ -6856,6 +7002,14 @@ class GodotServer {
 
   private async handleGameRenderSettings(args: any) {
     args = normalizeParameters(args || {});
+    if (args.hdr2d !== undefined || args.hdrOutput !== undefined) {
+      const version = await this.getGodotVersionString();
+      if (!version || !isGodot47OrLater(version)) {
+        return createErrorResponse(
+          `HDR output requires Godot 4.7 or later. Current version: ${version || 'unknown'}`
+        );
+      }
+    }
     return this.gameCommand('render_settings', args, a => ({
       action: a.action || 'get',
       ...(a.msaa2d !== undefined ? { msaa_2d: a.msaa2d } : {}),
@@ -6864,6 +7018,8 @@ class GodotServer {
       ...(a.taa !== undefined ? { taa: a.taa } : {}),
       ...(a.scalingMode !== undefined ? { scaling_mode: a.scalingMode } : {}),
       ...(a.scalingScale !== undefined ? { scaling_scale: a.scalingScale } : {}),
+      ...(a.hdr2d !== undefined ? { hdr_2d: a.hdr2d } : {}),
+      ...(a.hdrOutput !== undefined ? { hdr_output_requested: a.hdrOutput } : {}),
     }));
   }
 
@@ -6982,6 +7138,269 @@ class GodotServer {
       return createErrorResponse(`Unknown action: ${args.action}`);
     } catch (error: any) {
       return createErrorResponse(`manage_docker_export failed: ${error?.message || 'Unknown error'}`);
+    }
+  }
+
+  // --- Batch 7: Godot 4.7 features handlers ---
+
+  private async handleGameCreateVirtualJoystick(args: any) {
+    args = normalizeParameters(args || {});
+    const version = await this.getGodotVersionString();
+    if (!version || !isGodot47OrLater(version)) {
+      return createErrorResponse(
+        `VirtualJoystick requires Godot 4.7 or later. Current version: ${version || 'unknown'}`
+      );
+    }
+    return this.gameCommand('create_virtual_joystick', args, a => ({
+      ...(a.parentPath ? { parent_path: a.parentPath } : {}),
+      ...(a.name ? { name: a.name } : {}),
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.joystickSize !== undefined ? { joystick_size: a.joystickSize } : {}),
+      ...(a.tipSize !== undefined ? { tip_size: a.tipSize } : {}),
+      ...(a.joystickMode !== undefined ? { joystick_mode: a.joystickMode } : {}),
+      ...(a.visibilityMode !== undefined ? { visibility_mode: a.visibilityMode } : {}),
+      ...(a.actionUp ? { action_up: a.actionUp } : {}),
+      ...(a.actionDown ? { action_down: a.actionDown } : {}),
+      ...(a.actionLeft ? { action_left: a.actionLeft } : {}),
+      ...(a.actionRight ? { action_right: a.actionRight } : {}),
+      ...(a.deadzoneRatio !== undefined ? { deadzone_ratio: a.deadzoneRatio } : {}),
+      ...(a.clampzoneRatio !== undefined ? { clampzone_ratio: a.clampzoneRatio } : {}),
+      ...(a.initialOffsetRatio ? { initial_offset_ratio: a.initialOffsetRatio } : {}),
+      ...(a.color ? { color: a.color } : {}),
+      ...(a.tipColor ? { tip_color: a.tipColor } : {}),
+    }));
+  }
+
+  private async handleGameDrawTexture(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.nodePath || !args.action) return createErrorResponse('nodePath and action are required.');
+    const version = await this.getGodotVersionString();
+    if (!version || !isGodot47OrLater(version)) {
+      return createErrorResponse(
+        `DrawableTexture2D requires Godot 4.7 or later. Current version: ${version || 'unknown'}`
+      );
+    }
+    return this.gameCommand('draw_texture', args, a => ({
+      node_path: a.nodePath, action: a.action,
+      ...(a.width !== undefined ? { width: a.width } : {}),
+      ...(a.height !== undefined ? { height: a.height } : {}),
+      ...(a.fillColor ? { fill_color: a.fillColor } : {}),
+      ...(a.rect ? { rect: a.rect } : {}),
+      ...(a.color ? { color: a.color } : {}),
+      ...(a.filled !== undefined ? { filled: a.filled } : {}),
+      ...(a.center ? { center: a.center } : {}),
+      ...(a.radius !== undefined ? { radius: a.radius } : {}),
+      ...(a.from ? { from: a.from } : {}),
+      ...(a.to ? { to: a.to } : {}),
+      ...(a.widthPx !== undefined ? { width_px: a.widthPx } : {}),
+      ...(a.text ? { text: a.text } : {}),
+      ...(a.fontSize !== undefined ? { font_size: a.fontSize } : {}),
+      ...(a.position ? { position: a.position } : {}),
+      ...(a.path ? { path: a.path } : {}),
+    }));
+  }
+
+  /**
+   * Send a one-shot command to the editor plugin TCP server (port 9091).
+   * Resolves with the parsed JSON response, or null when no editor is listening.
+   */
+  private sendEditorCommand(command: string, params: any = {}): Promise<any | null> {
+    return new Promise(resolve => {
+      let settled = false;
+      const socket = createConnection({ host: '127.0.0.1', port: this.EDITOR_PORT }, () => {
+        socket.write(JSON.stringify({ command, params }) + '\n');
+      });
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          socket.destroy();
+          resolve(null);
+        }
+      }, 8000);
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        const newlinePos = buffer.indexOf('\n');
+        if (newlinePos !== -1 && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          const line = buffer.substring(0, newlinePos).trim();
+          socket.end();
+          try {
+            resolve(JSON.parse(line));
+          } catch {
+            resolve(null);
+          }
+        }
+      });
+      socket.on('error', () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+    });
+  }
+
+  private async handleRestartEditor(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.projectPath) return createErrorResponse('projectPath is required.');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    const projectFile = join(args.projectPath, 'project.godot');
+    if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
+
+    const save = args.save !== false;
+
+    // Preferred path: EditorInterface.restart_editor() via the editor plugin
+    if (this.isEditorPluginInstalled(args.projectPath)) {
+      const response = await this.sendEditorCommand('restart_editor', { save });
+      if (response && response.success) {
+        return {
+          content: [{ type: 'text', text: `Editor restart requested (EditorInterface.restart_editor, save=${save}).` }],
+        };
+      }
+    }
+
+    // Fallback: process-level restart of the editor launched by launch_editor
+    if (this.editorProcess && this.editorProcess.process && this.editorProcess.process.pid) {
+      const pid = this.editorProcess.process.pid;
+      try {
+        this.editorProcess.process.kill();
+        this.editorProcess = null;
+        this.logDebug(`Killed editor process (pid ${pid})`);
+      } catch (error: any) {
+        this.logDebug(`Failed to kill editor process: ${error?.message}`);
+      }
+    }
+
+    if (!this.godotPath) {
+      await this.detectGodotPath();
+    }
+    if (!this.godotPath) return createErrorResponse('Could not find a valid Godot executable path.');
+
+    const process = spawn(this.godotPath, ['-e', '--path', args.projectPath], { stdio: 'pipe' });
+    process.on('error', (err: Error) => console.error('Failed to start Godot editor:', err));
+    process.on('exit', () => {
+      if (this.editorProcess?.process === process) this.editorProcess = null;
+    });
+    this.editorProcess = { process, output: [], errors: [] };
+
+    return {
+      content: [{ type: 'text', text: `Godot editor restarted for project at ${args.projectPath} (process-level restart).` }],
+    };
+  }
+
+  private isEditorPluginInstalled(projectPath: string): boolean {
+    try {
+      const projectFile = join(projectPath, 'project.godot');
+      if (!existsSync(projectFile)) return false;
+      const content = readFileSync(projectFile, 'utf8');
+      if (!content.includes('godot_mcp_editor')) return false;
+      return existsSync(join(projectPath, this.EDITOR_ADDON_DIR, 'plugin.cfg'));
+    } catch {
+      return false;
+    }
+  }
+
+  private writeEditorPluginFiles(projectPath: string): void {
+    const srcDir = join(__dirname, 'scripts', 'addons', 'godot_mcp_editor');
+    if (!existsSync(srcDir)) {
+      throw new Error('Editor plugin source files not found in server package.');
+    }
+    const destDir = join(projectPath, this.EDITOR_ADDON_DIR);
+    mkdirSync(destDir, { recursive: true });
+    for (const file of ['plugin.cfg', 'editor_plugin.gd']) {
+      const src = join(srcDir, file);
+      if (!existsSync(src)) throw new Error(`Editor plugin source file missing: ${file}`);
+      copyFileSync(src, join(destDir, file));
+    }
+  }
+
+  private setEditorPluginEnabled(projectPath: string, enable: boolean): void {
+    const projectFile = join(projectPath, 'project.godot');
+    let content = readFileSync(projectFile, 'utf8');
+    const entry = 'res://addons/godot_mcp_editor/plugin.cfg';
+    const enabledLine = `enabled=PackedStringArray(`;
+    const re = /enabled=PackedStringArray\(([^)]*)\)/;
+    if (enable) {
+      if (content.includes('[editor_plugins]')) {
+        if (re.test(content)) {
+          content = content.replace(re, (match, inner: string) => {
+            if (inner.includes(entry)) return match;
+            const items = inner.split(',')
+              .map((s: string) => s.trim().replace(/^"|"$/g, ''))
+              .filter((s: string) => s.length > 0);
+            items.push(entry);
+            return `${enabledLine}${items.map((s: string) => `"${s}"`).join(', ')})`;
+          });
+        } else {
+          content = content.replace('[editor_plugins]', `[editor_plugins]\n\n${enabledLine}"${entry}")`);
+        }
+      } else {
+        content += `\n[editor_plugins]\n\n${enabledLine}"${entry}")\n`;
+      }
+    } else {
+      content = content.replace(re, (match, inner: string) => {
+        const items = inner.split(',')
+          .map((s: string) => s.trim().replace(/^"|"$/g, ''))
+          .filter((s: string) => s.length > 0 && s !== entry);
+        if (items.length === 0) return '';
+        return `${enabledLine}${items.map((s: string) => `"${s}"`).join(', ')})`;
+      });
+      content = content.replace(/\n\[editor_plugins\]\n\n\n/, '\n[editor_plugins]\n\n');
+      content = content.replace(/\n\n\[editor_plugins\]\n$/, '');
+    }
+    writeFileSync(projectFile, content, 'utf8');
+  }
+
+  private async handleManageEditorPlugin(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.projectPath) return createErrorResponse('projectPath is required.');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    const projectFile = join(args.projectPath, 'project.godot');
+    if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
+    const action = args.action || 'status';
+    const addonDir = join(args.projectPath, this.EDITOR_ADDON_DIR);
+
+    try {
+      if (action === 'install') {
+        this.writeEditorPluginFiles(args.projectPath);
+        this.setEditorPluginEnabled(args.projectPath, true);
+        const restartHint = this.editorProcess ? ' Restart the editor (restart_editor) to load the plugin.' : '';
+        return {
+          content: [{ type: 'text', text: `Godot MCP editor plugin installed and enabled at addons/godot_mcp_editor/.${restartHint}` }],
+        };
+      } else if (action === 'uninstall') {
+        this.setEditorPluginEnabled(args.projectPath, false);
+        if (existsSync(addonDir)) {
+          rmSync(addonDir, { recursive: true, force: true });
+        }
+        return {
+          content: [{ type: 'text', text: 'Godot MCP editor plugin removed.' }],
+        };
+      } else if (action === 'status') {
+        const filesPresent = existsSync(join(addonDir, 'plugin.cfg')) && existsSync(join(addonDir, 'editor_plugin.gd'));
+        const content = existsSync(projectFile) ? readFileSync(projectFile, 'utf8') : '';
+        const enabled = filesPresent && content.includes('godot_mcp_editor');
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              installed: filesPresent,
+              enabled,
+              addonPath: this.EDITOR_ADDON_DIR,
+              editorPort: this.EDITOR_PORT,
+              notes: enabled
+                ? 'Restart the editor (restart_editor) to activate; then use the editor server on TCP 9091.'
+                : 'Not installed. Run with action: install.',
+            }, null, 2),
+          }],
+        };
+      }
+      return createErrorResponse(`Unknown action: ${action}`);
+    } catch (error: any) {
+      return createErrorResponse(`manage_editor_plugin failed: ${error?.message || 'Unknown error'}`);
     }
   }
 

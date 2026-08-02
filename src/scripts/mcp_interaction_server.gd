@@ -332,6 +332,11 @@ func _handle_command(json_str: String) -> void:
 			_cmd_video(params)
 		"terrain":
 			_cmd_terrain(params)
+		# Batch 7: Godot 4.7 features
+		"create_virtual_joystick":
+			_cmd_create_virtual_joystick(params)
+		"draw_texture":
+			_cmd_draw_texture(params)
 		_:
 			_send_response({"error": "Unknown command: %s" % command})
 
@@ -3056,7 +3061,13 @@ func _cmd_window(params: Dictionary) -> void:
 	var action: String = params.get("action", "get")
 	var win: Window = get_tree().root
 	if action == "get":
-		_send_response({"success": true, "size": {"x": win.size.x, "y": win.size.y}, "position": {"x": win.position.x, "y": win.position.y}, "fullscreen": win.mode == Window.MODE_FULLSCREEN, "borderless": win.borderless, "title": win.title})
+		var hdr_info: Dictionary = {}
+		if win.has_method("get_output_max_linear_value"):
+			hdr_info = {
+				"hdr_output_requested": win.hdr_output_requested,
+				"output_max_linear_value": win.get_output_max_linear_value(),
+			}
+		_send_response({"success": true, "size": {"x": win.size.x, "y": win.size.y}, "position": {"x": win.position.x, "y": win.position.y}, "fullscreen": win.mode == Window.MODE_FULLSCREEN, "borderless": win.borderless, "title": win.title}.merged(hdr_info))
 		return
 	if params.has("width") and params.has("height"):
 		win.size = Vector2i(int(params["width"]), int(params["height"]))
@@ -3071,6 +3082,8 @@ func _cmd_window(params: Dictionary) -> void:
 		win.position = Vector2i(int(p.get("x", 0)), int(p.get("y", 0)))
 	if params.has("vsync"):
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if bool(params["vsync"]) else DisplayServer.VSYNC_DISABLED)
+	if params.has("hdr_output_requested") and win.has_method("get_output_max_linear_value"):
+		win.hdr_output_requested = bool(params["hdr_output_requested"])
 	_send_response({"success": true, "action": "set", "size": {"x": win.size.x, "y": win.size.y}})
 
 
@@ -3274,6 +3287,7 @@ func _cmd_light_3d(params: Dictionary) -> void:
 			"directional": light = DirectionalLight3D.new()
 			"omni": light = OmniLight3D.new()
 			"spot": light = SpotLight3D.new()
+			"area": light = AreaLight3D.new()
 			_:
 				_send_response({"error": "Unknown light type: %s" % light_type})
 				return
@@ -3291,6 +3305,14 @@ func _cmd_light_3d(params: Dictionary) -> void:
 				(light as SpotLight3D).spot_range = float(params["range"])
 			if params.has("spot_angle"):
 				(light as SpotLight3D).spot_angle = float(params["spot_angle"])
+		if light is AreaLight3D:
+			if params.has("size"):
+				var s: Dictionary = params["size"]
+				(light as AreaLight3D).size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
+			if params.has("area_attenuation"):
+				(light as AreaLight3D).area_attenuation = float(params["area_attenuation"])
+			if params.has("area_range"):
+				(light as AreaLight3D).area_range = float(params["area_range"])
 		if params.has("name") and not (params["name"] as String).is_empty():
 			light.name = params["name"]
 		parent.add_child(light)
@@ -3309,6 +3331,14 @@ func _cmd_light_3d(params: Dictionary) -> void:
 			light.light_energy = float(params["energy"])
 		if params.has("shadows"):
 			light.shadow_enabled = bool(params["shadows"])
+		if light is AreaLight3D:
+			if params.has("size"):
+				var s: Dictionary = params["size"]
+				(light as AreaLight3D).size = Vector2(float(s.get("x", 1)), float(s.get("y", 1)))
+			if params.has("area_attenuation"):
+				(light as AreaLight3D).area_attenuation = float(params["area_attenuation"])
+			if params.has("area_range"):
+				(light as AreaLight3D).area_range = float(params["area_range"])
 		_send_response({"success": true, "action": "configure", "path": str(node.get_path())})
 	else:
 		_send_response({"error": "Unknown light_3d action: %s" % action})
@@ -4629,7 +4659,15 @@ func _cmd_render_settings(params: Dictionary) -> void:
 	var vp: Viewport = get_viewport()
 	var action: String = params.get("action", "get")
 	if action == "get":
-		_send_response({"success": true, "msaa_2d": vp.msaa_2d, "msaa_3d": vp.msaa_3d, "screen_space_aa": vp.screen_space_aa, "use_taa": vp.use_taa, "scaling_3d_mode": vp.scaling_3d_mode, "scaling_3d_scale": vp.scaling_3d_scale})
+		var win: Window = get_window()
+		var hdr_info: Dictionary = {}
+		if win.has_method("get_output_max_linear_value"):
+			hdr_info = {
+				"hdr_2d": vp.use_hdr_2d,
+				"hdr_output_requested": win.hdr_output_requested,
+				"output_max_linear_value": win.get_output_max_linear_value(),
+			}
+		_send_response({"success": true, "msaa_2d": vp.msaa_2d, "msaa_3d": vp.msaa_3d, "screen_space_aa": vp.screen_space_aa, "use_taa": vp.use_taa, "scaling_3d_mode": vp.scaling_3d_mode, "scaling_3d_scale": vp.scaling_3d_scale}.merged(hdr_info))
 		return
 	if params.has("msaa_2d"):
 		vp.msaa_2d = int(params["msaa_2d"]) as Viewport.MSAA
@@ -4643,6 +4681,12 @@ func _cmd_render_settings(params: Dictionary) -> void:
 		vp.scaling_3d_mode = int(params["scaling_mode"]) as Viewport.Scaling3DMode
 	if params.has("scaling_scale"):
 		vp.scaling_3d_scale = float(params["scaling_scale"])
+	if params.has("hdr_2d"):
+		vp.use_hdr_2d = bool(params["hdr_2d"])
+	if params.has("hdr_output_requested"):
+		var win: Window = get_window()
+		if win.has_method("get_output_max_linear_value"):
+			win.hdr_output_requested = bool(params["hdr_output_requested"])
 	_send_response({"success": true, "action": "set"})
 
 
@@ -4845,6 +4889,253 @@ func _terrain_rebuild(mi: MeshInstance3D) -> void:
 	mat.vertex_color_use_as_albedo = true
 	st.set_material(mat)
 	mi.mesh = st.commit()
+
+
+# --- Batch 7: Godot 4.7 features ---
+
+func _cmd_create_virtual_joystick(params: Dictionary) -> void:
+	if not ClassDB.class_exists("VirtualJoystick"):
+		_send_response({"error": "VirtualJoystick requires Godot 4.7 or later"})
+		return
+	var parent_path: String = params.get("parent_path", "/root")
+	var parent: Node = get_tree().root.get_node_or_null(parent_path)
+	if parent == null:
+		_send_response({"error": "Parent not found: %s" % parent_path})
+		return
+	var stick: Control = ClassDB.instantiate("VirtualJoystick") as Control
+	if stick == null:
+		_send_response({"error": "Failed to instantiate VirtualJoystick"})
+		return
+	var node_name: String = params.get("name", "VirtualJoystick")
+	if not node_name.is_empty():
+		stick.name = node_name
+	# Full-screen control so the joystick can be placed anywhere via ratios
+	stick.set_anchors_preset(Control.PRESET_FULL_RECT)
+	if params.has("position"):
+		var p: Dictionary = params["position"]
+		stick.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		stick.position = Vector2(float(p.get("x", 0)), float(p.get("y", 0)))
+	if params.has("joystick_size"):
+		stick.set("joystick_size", float(params["joystick_size"]))
+	if params.has("tip_size"):
+		stick.set("tip_size", float(params["tip_size"]))
+	if params.has("joystick_mode"):
+		stick.set("joystick_mode", int(params["joystick_mode"]))
+	if params.has("visibility_mode"):
+		stick.set("visibility_mode", int(params["visibility_mode"]))
+	if params.has("action_up"):
+		stick.set("action_up", str(params["action_up"]))
+	if params.has("action_down"):
+		stick.set("action_down", str(params["action_down"]))
+	if params.has("action_left"):
+		stick.set("action_left", str(params["action_left"]))
+	if params.has("action_right"):
+		stick.set("action_right", str(params["action_right"]))
+	if params.has("deadzone_ratio"):
+		stick.set("deadzone_ratio", float(params["deadzone_ratio"]))
+	if params.has("clampzone_ratio"):
+		stick.set("clampzone_ratio", float(params["clampzone_ratio"]))
+	if params.has("initial_offset_ratio"):
+		var r: Dictionary = params["initial_offset_ratio"]
+		stick.set("initial_offset_ratio", Vector2(float(r.get("x", 0.5)), float(r.get("y", 0.5))))
+	var base_color: Color = Color(1, 1, 1, 0.35)
+	var tip_color: Color = Color(1, 1, 1, 0.5)
+	if params.has("color"):
+		var c: Dictionary = params["color"]
+		base_color = Color(float(c.get("r", 1)), float(c.get("g", 1)), float(c.get("b", 1)), float(c.get("a", 0.35)))
+	if params.has("tip_color"):
+		var tc: Dictionary = params["tip_color"]
+		tip_color = Color(float(tc.get("r", 1)), float(tc.get("g", 1)), float(tc.get("b", 1)), float(tc.get("a", 0.5)))
+	var joystick_size: float = float(stick.get("joystick_size"))
+	var tip_size: float = float(stick.get("tip_size"))
+	var base: StyleBoxFlat = StyleBoxFlat.new()
+	base.bg_color = base_color
+	base.set_corner_radius_all(int(joystick_size * 0.5))
+	var base_pressed: StyleBoxFlat = StyleBoxFlat.new()
+	base_pressed.bg_color = Color(base_color.r, base_color.g, base_color.b, minf(base_color.a + 0.2, 1.0))
+	base_pressed.set_corner_radius_all(int(joystick_size * 0.5))
+	var tip_sb: StyleBoxFlat = StyleBoxFlat.new()
+	tip_sb.bg_color = tip_color
+	tip_sb.set_corner_radius_all(int(tip_size * 0.5))
+	var tip_pressed: StyleBoxFlat = StyleBoxFlat.new()
+	tip_pressed.bg_color = Color(tip_color.r, tip_color.g, tip_color.b, minf(tip_color.a + 0.2, 1.0))
+	tip_pressed.set_corner_radius_all(int(tip_size * 0.5))
+	stick.add_theme_stylebox_override("normal_joystick", base)
+	stick.add_theme_stylebox_override("pressed_joystick", base_pressed)
+	stick.add_theme_stylebox_override("normal_tip", tip_sb)
+	stick.add_theme_stylebox_override("pressed_tip", tip_pressed)
+	parent.add_child(stick)
+	_send_response({"success": true, "name": stick.name, "path": str(stick.get_path()), "joystick_size": joystick_size, "tip_size": tip_size})
+
+
+func _cmd_draw_texture(params: Dictionary) -> void:
+	var node_path: String = params.get("node_path", "")
+	var node: Node = get_tree().root.get_node_or_null(node_path)
+	if node == null:
+		_send_response({"error": "Node not found: %s" % node_path})
+		return
+	if not "texture" in node:
+		_send_response({"error": "Node has no texture property: %s" % node_path})
+		return
+	var action: String = params.get("action", "setup")
+	var drawable: DrawableTexture2D = node.get("texture") if node.get("texture") is DrawableTexture2D else null
+	# CPU-side mirror so drawing/saving works even in headless mode, where
+	# DrawableTexture2D.get_image() returns null (dummy renderer).
+	var cpu_img: Image = null
+	if node.has_meta("mcp_drawable_cpu_image"):
+		cpu_img = node.get_meta("mcp_drawable_cpu_image")
+	if action == "setup":
+		var width: int = int(params.get("width", 256))
+		var height: int = int(params.get("height", 256))
+		var fill: Dictionary = params.get("fill_color", {"r": 0, "g": 0, "b": 0, "a": 0})
+		var fill_color: Color = Color(float(fill.get("r", 0)), float(fill.get("g", 0)), float(fill.get("b", 0)), float(fill.get("a", 0)))
+		cpu_img = Image.create(width, height, false, Image.FORMAT_RGBA8)
+		cpu_img.fill(fill_color)
+		node.set_meta("mcp_drawable_cpu_image", cpu_img)
+		if drawable == null:
+			drawable = DrawableTexture2D.new()
+			drawable.setup(width, height, DrawableTexture2D.DRAWABLE_FORMAT_RGBA8, fill_color, false)
+			node.set("texture", drawable)
+		else:
+			drawable.setup(width, height, DrawableTexture2D.DRAWABLE_FORMAT_RGBA8, fill_color, false)
+		_push_cpu_image(drawable, cpu_img)
+		_send_response({"success": true, "action": "setup", "width": width, "height": height, "node_path": node_path})
+		return
+	if cpu_img == null:
+		_send_response({"error": "No DrawableTexture2D attached; run setup first"})
+		return
+	if action == "clear":
+		var fill: Dictionary = params.get("fill_color", {"r": 0, "g": 0, "b": 0, "a": 0})
+		var fill_color: Color = Color(float(fill.get("r", 0)), float(fill.get("g", 0)), float(fill.get("b", 0)), float(fill.get("a", 0)))
+		cpu_img.fill(fill_color)
+		_push_cpu_image(drawable, cpu_img)
+		_send_response({"success": true, "action": "clear"})
+		return
+	if action == "save":
+		var save_path: String = params.get("path", "")
+		if save_path.is_empty():
+			_send_response({"error": "path is required for save"})
+			return
+		var err: int = cpu_img.save_png(save_path)
+		_send_response({"success": err == OK, "action": "save", "path": save_path, "error": error_string(err) if err != OK else null})
+		return
+	var tex_w: int = cpu_img.get_width()
+	var tex_h: int = cpu_img.get_height()
+	var color_d: Dictionary = params.get("color", {"r": 1, "g": 1, "b": 1, "a": 1})
+	var color: Color = Color(float(color_d.get("r", 1)), float(color_d.get("g", 1)), float(color_d.get("b", 1)), float(color_d.get("a", 1)))
+	match action:
+		"draw_rect":
+			var rect_d: Dictionary = params.get("rect", {"x": 0, "y": 0, "w": 10, "h": 10})
+			var rect: Rect2i = Rect2i(int(rect_d.get("x", 0)), int(rect_d.get("y", 0)), int(rect_d.get("w", 10)), int(rect_d.get("h", 10)))
+			var filled: bool = params.get("filled", true)
+			var img: Image = Image.create(rect.size.x, rect.size.y, false, Image.FORMAT_RGBA8)
+			if filled:
+				img.fill_rect(Rect2i(0, 0, rect.size.x, rect.size.y), color)
+			else:
+				var width_px: int = maxi(int(params.get("width_px", 2.0)), 1)
+				for i in range(width_px):
+					img.fill_rect(Rect2i(i, i, maxi(rect.size.x - i * 2, 1), 1), color)
+					img.fill_rect(Rect2i(i, rect.size.y - 1 - i, maxi(rect.size.x - i * 2, 1), 1), color)
+					img.fill_rect(Rect2i(i, i, 1, maxi(rect.size.y - i * 2, 1)), color)
+					img.fill_rect(Rect2i(rect.size.x - 1 - i, i, 1, maxi(rect.size.y - i * 2, 1)), color)
+			cpu_img.blend_rect(img, Rect2i(0, 0, rect.size.x, rect.size.y), rect.position)
+			_push_cpu_image(drawable, cpu_img)
+			_send_response({"success": true, "action": "draw_rect", "rect": {"x": rect.position.x, "y": rect.position.y, "w": rect.size.x, "h": rect.size.y}})
+		"draw_circle":
+			var center_d: Dictionary = params.get("center", {"x": tex_w * 0.5, "y": tex_h * 0.5})
+			var center: Vector2 = Vector2(float(center_d.get("x", tex_w * 0.5)), float(center_d.get("y", tex_h * 0.5)))
+			var radius: float = float(params.get("radius", 10.0))
+			var filled: bool = params.get("filled", true)
+			var rect: Rect2i = Rect2i(int(center.x - radius), int(center.y - radius), int(radius * 2.0 + 1.0), int(radius * 2.0 + 1.0))
+			var img: Image = Image.create(rect.size.x, rect.size.y, false, Image.FORMAT_RGBA8)
+			var r2: float = radius * radius
+			var cy: float = rect.size.y * 0.5
+			var cx: float = rect.size.x * 0.5
+			for y in range(rect.size.y):
+				var dy: float = y - cy
+				var dx: float = sqrt(maxf(r2 - dy * dy, 0.0))
+				var x0: int = int(cx - dx)
+				var x1: int = int(cx + dx)
+				if filled:
+					img.fill_rect(Rect2i(x0, y, maxi(x1 - x0, 1), 1), color)
+				else:
+					img.set_pixel(x0, y, color)
+					img.set_pixel(x1, y, color)
+			cpu_img.blend_rect(img, Rect2i(0, 0, rect.size.x, rect.size.y), rect.position)
+			_push_cpu_image(drawable, cpu_img)
+			_send_response({"success": true, "action": "draw_circle", "center": {"x": center.x, "y": center.y}, "radius": radius})
+		"draw_line":
+			var from_d: Dictionary = params.get("from", {"x": 0, "y": 0})
+			var to_d: Dictionary = params.get("to", {"x": 10, "y": 10})
+			var from_p: Vector2 = Vector2(float(from_d.get("x", 0)), float(from_d.get("y", 0)))
+			var to_p: Vector2 = Vector2(float(to_d.get("x", 10)), float(to_d.get("y", 10)))
+			var width_px: int = maxi(int(params.get("width_px", 2.0)), 1)
+			var half: int = int(floorf(width_px * 0.5))
+			var min_x: int = int(minf(from_p.x, to_p.x)) - half - 1
+			var min_y: int = int(minf(from_p.y, to_p.y)) - half - 1
+			var max_x: int = int(maxf(from_p.x, to_p.x)) + half + 1
+			var max_y: int = int(maxf(from_p.y, to_p.y)) + half + 1
+			var rect: Rect2i = Rect2i(min_x, min_y, int(maxf(max_x - min_x, 1)), int(maxf(max_y - min_y, 1)))
+			var img: Image = Image.create(rect.size.x, rect.size.y, false, Image.FORMAT_RGBA8)
+			var a: Vector2 = from_p - Vector2(min_x, min_y)
+			var b: Vector2 = to_p - Vector2(min_x, min_y)
+			var dist: float = a.distance_to(b)
+			var steps: int = maxi(int(dist), 1)
+			for i in range(steps + 1):
+				var t: float = float(i) / float(steps)
+				var p: Vector2 = a.lerp(b, t)
+				img.fill_rect(Rect2i(int(p.x) - half, int(p.y) - half, width_px, width_px), color)
+			cpu_img.blend_rect(img, Rect2i(0, 0, rect.size.x, rect.size.y), rect.position)
+			_push_cpu_image(drawable, cpu_img)
+			_send_response({"success": true, "action": "draw_line"})
+		"draw_text":
+			var text: String = params.get("text", "")
+			if text.is_empty():
+				_send_response({"error": "text is required for draw_text"})
+				return
+			var pos_d: Dictionary = params.get("position", {"x": 0, "y": 0})
+			var pos: Vector2 = Vector2(float(pos_d.get("x", 0)), float(pos_d.get("y", 0)))
+			var font_size: int = int(params.get("font_size", 16))
+			if DisplayServer.get_name() == "headless":
+				_send_response({"success": false, "action": "draw_text", "error": "draw_text is unavailable in headless mode (no renderer)"})
+				return
+			await _draw_text_on_drawable(drawable, cpu_img, text, pos, font_size, color)
+			_push_cpu_image(drawable, cpu_img)
+			_send_response({"success": true, "action": "draw_text"})
+		_:
+			_send_response({"error": "Unknown draw_texture action: %s" % action})
+
+
+func _push_cpu_image(drawable: DrawableTexture2D, img: Image) -> void:
+	if drawable == null:
+		return
+	drawable.blit_rect(Rect2i(0, 0, img.get_width(), img.get_height()), ImageTexture.create_from_image(img))
+
+
+func _draw_text_on_drawable(drawable: DrawableTexture2D, cpu_img: Image, text: String, pos: Vector2, font_size: int, color: Color) -> void:
+	var font: Font = ThemeDB.fallback_font
+	var text_size: Vector2 = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var rect: Rect2i = Rect2i(int(pos.x), int(pos.y - font.get_ascent(font_size)), int(ceilf(text_size.x)) + 2, int(ceilf(text_size.y)) + 2)
+	var label: Label = Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", color)
+	var svp: SubViewport = SubViewport.new()
+	svp.size = rect.size
+	svp.transparent_bg = true
+	svp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	svp.add_child(label)
+	get_tree().root.add_child(svp)
+	var img: Image = null
+	for i in range(10):
+		await get_tree().process_frame
+		if svp.get_texture() != null:
+			img = svp.get_texture().get_image()
+			if img != null and not img.is_empty():
+				break
+	if img != null and not img.is_empty():
+		cpu_img.blend_rect(img, Rect2i(0, 0, img.get_width(), img.get_height()), rect.position)
+	svp.queue_free()
 
 
 func _exit_tree() -> void:

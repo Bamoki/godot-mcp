@@ -32,6 +32,18 @@ try {
     path.join(__dirname, '..', 'build', 'scripts', 'validate_script.gd')
   );
 
+  // Copy the editor plugin addon (godot_mcp_editor) recursively
+  const addonsSrc = path.join(__dirname, '..', 'src', 'scripts', 'addons');
+  if (fs.existsSync(addonsSrc)) {
+    fs.copySync(
+      addonsSrc,
+      path.join(__dirname, '..', 'build', 'scripts', 'addons')
+    );
+    console.log('Successfully copied editor addons to build/scripts/addons');
+  } else {
+    console.log('No addons directory found in src/scripts, skipping');
+  }
+
   console.log('Successfully copied scripts to build/scripts');
 } catch (error) {
   console.error('Error copying scripts:', error);

@@ -62,6 +62,8 @@ const ALL_TOOL_NAMES = [
   'game_render_settings', 'game_resource',
   // Batch 6: Visual Shader + Terrain + Video + CI/CD
   'game_visual_shader', 'game_terrain', 'game_video', 'manage_ci_pipeline', 'manage_docker_export',
+  // Batch 7: Godot 4.7 features
+  'game_create_virtual_joystick', 'game_draw_texture', 'restart_editor', 'manage_editor_plugin',
 ];
 
 let sourceCode: string;
@@ -71,8 +73,8 @@ beforeAll(() => {
 });
 
 describe('Tool definitions', () => {
-  it('defines exactly 157 tools', () => {
-    expect(ALL_TOOL_NAMES).toHaveLength(157);
+  it('defines exactly 161 tools', () => {
+    expect(ALL_TOOL_NAMES).toHaveLength(161);
   });
 
   it('all tool names are unique', () => {

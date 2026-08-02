@@ -225,11 +225,19 @@ export function createErrorResponse(message: string): any {
 }
 
 export function isGodot44OrLater(version: string): boolean {
+  return isGodotVersionAtLeast(version, 4, 4);
+}
+
+export function isGodot47OrLater(version: string): boolean {
+  return isGodotVersionAtLeast(version, 4, 7);
+}
+
+export function isGodotVersionAtLeast(version: string, major: number, minor: number): boolean {
   const match = version.match(/^(\d+)\.(\d+)/);
   if (match) {
-    const major = parseInt(match[1], 10);
-    const minor = parseInt(match[2], 10);
-    return major > 4 || (major === 4 && minor >= 4);
+    const vMajor = parseInt(match[1], 10);
+    const vMinor = parseInt(match[2], 10);
+    return vMajor > major || (vMajor === major && vMinor >= minor);
   }
   return false;
 }
@@ -300,10 +308,16 @@ export function isValidCsharpIdentifier(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }
 
+export function normalizeGodotFeatureVersion(version: string): string {
+  const match = version.match(/^(\d+)\.(\d+)/);
+  return match ? `${match[1]}.${match[2]}` : '4.4';
+}
+
 export function generateGodotProjectFeatures(isDotnet: boolean, version: string = '4.4'): string {
+  const featureVersion = normalizeGodotFeatureVersion(version);
   return isDotnet
-    ? `PackedStringArray("${version}", "C#")`
-    : `PackedStringArray("${version}")`;
+    ? `PackedStringArray("${featureVersion}", "C#")`
+    : `PackedStringArray("${featureVersion}")`;
 }
 
 export function generateCsprojContent(
