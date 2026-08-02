@@ -14,6 +14,7 @@ const ALL_TOOL_NAMES = [
   'game_eval', 'game_get_property', 'game_set_property', 'game_call_method',
   'game_get_node_info', 'game_instantiate_scene', 'game_remove_node',
   'game_change_scene', 'game_pause', 'game_performance', 'game_wait',
+  'game_resume', 'game_wait_for_node', 'game_wait_for_scene', 'game_reload_scripts',
   'read_scene', 'modify_scene_node', 'remove_scene_node',
   'read_project_settings', 'modify_project_settings', 'list_project_files',
   'game_connect_signal', 'game_disconnect_signal', 'game_emit_signal',
@@ -64,6 +65,8 @@ const ALL_TOOL_NAMES = [
   'game_visual_shader', 'game_terrain', 'game_video', 'manage_ci_pipeline', 'manage_docker_export',
   // Batch 7: Godot 4.7 features
   'game_create_virtual_joystick', 'game_draw_texture', 'restart_editor', 'manage_editor_plugin',
+  // Batch 8: Fault-tolerant workflow
+  'editor_resume', 'editor_reload_scripts',
 ];
 
 let sourceCode: string;
@@ -73,8 +76,8 @@ beforeAll(() => {
 });
 
 describe('Tool definitions', () => {
-  it('defines exactly 162 tools', () => {
-    expect(ALL_TOOL_NAMES).toHaveLength(162);
+  it('defines exactly 168 tools', () => {
+    expect(ALL_TOOL_NAMES).toHaveLength(168);
   });
 
   it('all tool names are unique', () => {

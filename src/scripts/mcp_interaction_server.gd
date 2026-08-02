@@ -122,6 +122,12 @@ func _handle_command(json_str: String) -> void:
 			_cmd_get_project_info()
 		"wait":
 			await _cmd_wait(params)
+		"wait_for_node":
+			await _cmd_wait_for_node(params)
+		"wait_for_scene":
+			await _cmd_wait_for_scene(params)
+		"reload_scripts":
+			_cmd_reload_scripts(params)
 		# Sync commands
 		"mouse_move":
 			_cmd_mouse_move(params)
@@ -145,6 +151,8 @@ func _handle_command(json_str: String) -> void:
 			_cmd_change_scene(params)
 		"pause":
 			_cmd_pause(params)
+		"resume":
+			_cmd_resume()
 		"get_performance":
 			_cmd_get_performance(params)
 		"connect_signal":
@@ -488,28 +496,49 @@ func _cmd_get_ui_elements() -> void:
 func _collect_ui_elements(node: Node, elements: Array) -> void:
 	if node is Control:
 		var ctrl: Control = node as Control
-		if ctrl.visible and ctrl.get_global_rect().size.x > 0:
-			var info: Dictionary = {
-				"name": ctrl.name,
-				"type": ctrl.get_class(),
-				"path": str(ctrl.get_path()),
-				"position": {"x": ctrl.global_position.x, "y": ctrl.global_position.y},
-				"size": {"width": ctrl.size.x, "height": ctrl.size.y},
-			}
-			# Get text content for common text-bearing nodes
-			if ctrl is Label:
-				info["text"] = (ctrl as Label).text
-			elif ctrl is Button:
-				info["text"] = (ctrl as Button).text
-			elif ctrl is LineEdit:
-				info["text"] = (ctrl as LineEdit).text
-			elif ctrl is RichTextLabel:
-				info["text"] = (ctrl as RichTextLabel).get_parsed_text()
-
-			elements.append(info)
+		if ctrl.visible:
+			var rect: Rect2 = ctrl.get_global_rect()
+			# Skip fully collapsed controls but keep text-bearing ones even if
+			# their rect is currently zero-sized (e.g. still laying out).
+			var has_text: bool = ctrl is Label or ctrl is Button or ctrl is LineEdit or ctrl is RichTextLabel
+			if rect.size.x > 0 or rect.size.y > 0 or has_text:
+				var info: Dictionary = {
+					"name": ctrl.name,
+					"type": ctrl.get_class(),
+					"path": str(ctrl.get_path()),
+					"rect": {"x": rect.position.x, "y": rect.position.y, "width": rect.size.x, "height": rect.size.y},
+					"position": {"x": rect.position.x, "y": rect.position.y},
+					"size": {"width": rect.size.x, "height": rect.size.y},
+					"visible": ctrl.visible,
+					"z_index": ctrl.z_index,
+					"rotation_degrees": ctrl.rotation_degrees,
+					"scale": {"x": ctrl.scale.x, "y": ctrl.scale.y},
+					"mouse_filter": _control_mouse_filter_name(ctrl.mouse_filter),
+				}
+				# Get text content for common text-bearing nodes
+				if ctrl is Label:
+					info["text"] = (ctrl as Label).text
+				elif ctrl is Button:
+					info["text"] = (ctrl as Button).text
+				elif ctrl is LineEdit:
+					info["text"] = (ctrl as LineEdit).text
+				elif ctrl is RichTextLabel:
+					info["text"] = (ctrl as RichTextLabel).get_parsed_text()
+				elements.append(info)
 
 	for child in node.get_children():
 		_collect_ui_elements(child, elements)
+
+
+func _control_mouse_filter_name(f: Control.MouseFilter) -> String:
+	match f:
+		Control.MOUSE_FILTER_STOP:
+			return "stop"
+		Control.MOUSE_FILTER_PASS:
+			return "pass"
+		Control.MOUSE_FILTER_IGNORE:
+			return "ignore"
+	return "stop"
 
 
 # --- Get Scene Tree ---
@@ -569,18 +598,79 @@ func _string_to_keycode(key_str: String) -> int:
 
 
 # --- Eval: Execute arbitrary GDScript at runtime ---
+# Two execution modes:
+#  - safe (default true): single-expression code runs through Expression with
+#    show_error=false, so runtime errors are captured as data and never reach
+#    the debugger (the game never pauses on an eval error).
+#  - flexible: code containing statements / await runs in a temp script. Errors
+#    print but the game keeps running; a watchdog prevents the server hanging.
 func _cmd_eval(params: Dictionary) -> void:
 	var code: String = params.get("code", "")
 	if code.is_empty():
 		_send_response({"error": "No code provided"})
 		return
 
+	var safe: bool = params.get("safe", true)
 	var timeout_ms: float = float(params.get("timeout_ms", 30000))
 	if timeout_ms < 1000.0:
 		timeout_ms = 1000.0
 	if timeout_ms > 120000.0:
 		timeout_ms = 120000.0
 
+	if safe and _is_safe_expression_code(code):
+		_cmd_eval_expression(code)
+		return
+
+	await _cmd_eval_flexible(code, timeout_ms)
+
+
+# True when the code is a single expression (no statements/await) that can be
+# safely evaluated with Expression.execute() without touching the debugger.
+func _is_safe_expression_code(code: String) -> bool:
+	var trimmed: String = code.strip_edges()
+	if trimmed.begins_with("return "):
+		trimmed = trimmed.substr("return ".length())
+	# Multi-line code with statements is not expression-shaped.
+	if trimmed.contains("\n"):
+		return false
+	var statement_tokens: Array[String] = [
+		"var ", "if ", "for ", "while ", "match ", "func ", "elif ", "else ",
+		":=", "await", " return", "pass",
+	]
+	for token in statement_tokens:
+		if trimmed.contains(token):
+			return false
+	return not trimmed.is_empty()
+
+
+# Safe expression eval: errors are captured, never propagated to the debugger.
+func _cmd_eval_expression(code: String) -> void:
+	var expr_code: String = code.strip_edges()
+	if expr_code.begins_with("return "):
+		expr_code = expr_code.substr("return ".length())
+	var expr: Expression = Expression.new()
+	var perr: int = expr.parse(expr_code)
+	if perr != OK:
+		_send_response({
+			"success": false,
+			"error": "Expression parse error (%d): %s" % [perr, expr.get_error_text()],
+			"safe": true,
+		})
+		return
+	var result: Variant = expr.execute([], self, false)
+	if expr.has_execute_failed():
+		_send_response({
+			"success": false,
+			"error": expr.get_error_text(),
+			"safe": true,
+		})
+		return
+	_send_response({"success": true, "result": _variant_to_json(result), "safe": true})
+
+
+# Flexible eval: supports statements and await. A watchdog guarantees the
+# server always responds even if the user code hangs or aborts mid-coroutine.
+func _cmd_eval_flexible(code: String, timeout_ms: float) -> void:
 	# Wrap user code in a function so we can capture the return value
 	var script_source: String = """extends Node
 
@@ -624,11 +714,12 @@ func _run():
 	if temp_node.has_method("execute"):
 		result = await temp_node.execute()
 
+	# If the watchdog fired while awaiting, it already responded and may have
+	# freed the temp node. Avoid a double response.
 	if watchdog.is_stopped():
-		# Watchdog already responded (timeout). Avoid double response.
 		return
-	watchdog.stop()
 
+	watchdog.stop()
 	temp_node.queue_free()
 	_send_response({"success": true, "result": _variant_to_json(result)})
 
@@ -829,6 +920,17 @@ func _cmd_pause(params: Dictionary) -> void:
 	_send_response({"success": true, "paused": paused})
 
 
+# --- Resume ---
+func _cmd_resume() -> void:
+	get_tree().paused = false
+	_send_response({
+		"success": true,
+		"paused": false,
+		"debugger_active": EngineDebugger.is_active(),
+		"note": "Game pause cleared. If the editor debugger is paused on a breakpoint/error, use the editor resume command.",
+	})
+
+
 # --- Get Performance ---
 func _cmd_get_performance(_params: Dictionary) -> void:
 	_send_response({
@@ -857,6 +959,141 @@ func _cmd_wait(params: Dictionary) -> void:
 		else:
 			await get_tree().process_frame
 	_send_response({"success": true, "waited_frames": frames, "frame_type": "physics" if use_physics else "render"})
+
+
+# --- Wait Until Node Exists ---
+func _cmd_wait_for_node(params: Dictionary) -> void:
+	var node_path: String = params.get("node_path", "")
+	if node_path.is_empty():
+		_send_response({"error": "node_path is required"})
+		return
+	var timeout_ms: float = float(params.get("timeout_ms", 5000))
+	if timeout_ms <= 0.0:
+		timeout_ms = 5000.0
+	var deadline: float = Time.get_ticks_msec() + timeout_ms
+	var found: Node = null
+	while Time.get_ticks_msec() < deadline:
+		found = get_tree().root.get_node_or_null(node_path)
+		if found != null:
+			break
+		await get_tree().process_frame
+	if found == null:
+		_send_response({"success": false, "error": "Node not found within %.0fms: %s" % [timeout_ms, node_path]})
+		return
+	_send_response({"success": true, "found": true, "node_path": node_path, "type": found.get_class()})
+
+
+# --- Wait For Scene ---
+func _cmd_wait_for_scene(params: Dictionary) -> void:
+	var scene_path: String = params.get("scene_path", "")
+	var timeout_ms: float = float(params.get("timeout_ms", 10000))
+	if timeout_ms <= 0.0:
+		timeout_ms = 10000.0
+	var deadline: float = Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		var scene: Node = get_tree().current_scene
+		if scene != null:
+			if scene_path.is_empty():
+				_send_response({
+					"success": true,
+					"found": true,
+					"scene_path": scene.scene_file_path,
+					"scene_name": scene.name,
+				})
+				return
+			if scene.scene_file_path == scene_path:
+				_send_response({
+					"success": true,
+					"found": true,
+					"scene_path": scene.scene_file_path,
+					"scene_name": scene.name,
+				})
+				return
+		await get_tree().process_frame
+	_send_response({
+		"success": false,
+		"error": "Scene not ready within %.0fms%s" % [timeout_ms, ": %s" % scene_path if not scene_path.is_empty() else ""],
+	})
+
+
+# --- Reload Scripts (hot reload) ---
+# Reloads GDScript resources from disk. When scripts is empty, every .gd
+# resource currently attached to a node in the tree is reloaded. New instances
+# use the new code; existing nodes using the script are re-attached so their
+# script variables reset to defaults (use reinit to re-run _ready best-effort).
+func _cmd_reload_scripts(params: Dictionary) -> void:
+	var scripts: Array = params.get("scripts", [])
+	var reinit: bool = params.get("reinit", false)
+	var paths: Array = []
+	if scripts is Array and scripts.size() > 0:
+		for p in scripts:
+			paths.append(str(p))
+	else:
+		paths = _scripts_in_use()
+
+	var reloaded: Array = []
+	var errors: Array = []
+	for path in paths:
+		var script_path: String = str(path)
+		if not script_path.ends_with(".gd"):
+			continue
+		if not ResourceLoader.exists(script_path):
+			errors.append({"script": script_path, "error": "resource not found"})
+			continue
+		var affected: Array = _nodes_using_script(script_path)
+		# Detach instances so reload() is allowed
+		for n in affected:
+			(n as Node).set_script(null)
+		var fresh: Script = ResourceLoader.load(script_path, "Script", ResourceLoader.CACHE_MODE_REPLACE) as Script
+		if fresh == null:
+			errors.append({"script": script_path, "error": "failed to load"})
+			continue
+		var rerr: int = (fresh as GDScript).reload()
+		if rerr != OK:
+			errors.append({"script": script_path, "error": "reload failed (%d)" % rerr})
+			continue
+		# Re-attach to previously affected nodes
+		for n in affected:
+			if not is_instance_valid(n):
+				continue
+			var node: Node = n as Node
+			node.set_script(fresh)
+			if reinit and node.has_method("_ready"):
+				node.call("_ready")
+		reloaded.append({
+			"script": script_path,
+			"nodes": affected.size(),
+			"reinit": reinit,
+		})
+	_send_response({"success": true, "reloaded": reloaded, "errors": errors})
+
+
+func _scripts_in_use() -> Array:
+	var seen: Dictionary = {}
+	_scan_scripts(get_tree().root, seen)
+	return seen.keys()
+
+
+func _scan_scripts(node: Node, seen: Dictionary) -> void:
+	var s: Script = node.get_script()
+	if s != null and not s.resource_path.is_empty() and s.resource_path.ends_with(".gd"):
+		seen[s.resource_path] = true
+	for child in node.get_children():
+		_scan_scripts(child, seen)
+
+
+func _nodes_using_script(script_path: String) -> Array:
+	var result: Array = []
+	_scan_nodes_for_script(get_tree().root, script_path, result)
+	return result
+
+
+func _scan_nodes_for_script(node: Node, script_path: String, result: Array) -> void:
+	var s: Script = node.get_script()
+	if s != null and s.resource_path == script_path:
+		result.append(node)
+	for child in node.get_children():
+		_scan_nodes_for_script(child, script_path, result)
 
 
 # --- Helper: Convert Godot Variant to JSON-safe value ---

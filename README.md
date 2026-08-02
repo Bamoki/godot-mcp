@@ -16,7 +16,14 @@ This project is built upon and extends [godot-mcp](https://github.com/Coding-Sol
 
 ## What's New (Improvements Over Original)
 
-The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **162 tools** with the following major additions:
+The original godot-mcp provided 20 tools for basic project management and scene creation. This fork extends it to **168 tools** with the following major additions:
+
+### New in 3.4 (Fault-tolerant workflow)
+- **`game_eval` `safe` mode (default true)** - Single-expression code runs through `Expression.execute()` with `show_error=false`, so runtime errors are captured as data (`success:false`) and **never reach the debugger** - the game never pauses on an eval error. Code with statements/`await` falls back to the flexible path (temp script + watchdog); errors print to the game log while the game keeps running, and the server always responds.
+- **`game_resume` / `editor_resume`** - Clear a game pause, or resume a game paused on the editor debugger breakpoint/error via the editor plugin (TCP 9091).
+- **`game_get_ui_elements` reliable rects** - Uses `get_global_rect()` and reports `rect`, `position`, `size`, `visible`, `z_index`, `rotation_degrees`, `scale`, and `mouse_filter` (stop/pass/ignore); text-bearing controls with zero-size rects fall back to their text.
+- **`game_wait_for_node` / `game_wait_for_scene`** - Poll until a node path or scene is present (with timeout) so agents can synchronize on game state.
+- **`game_reload_scripts` / `editor_reload_scripts`** - Hot-reload `.gd` scripts (CACHE_MODE_REPLACE), reattach to live nodes, and optionally push from the editor to the running game.
 
 ### New in 3.3 (Reliability & workflows)
 - **`connect_game`** - Attach to an already-running game (e.g. launched from the Godot editor with F5) without `run_project` spawning the process. Game control tools now only require a live connection, not a spawned process. Auto-reconnect keeps the session alive if the game restarts or the socket drops (capped retries; stops when the game quits).
@@ -233,7 +240,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 - **PackedArray serialization** - Proper JSON arrays instead of string fallback
 - **Graceful error handling** - Scene read fallback to raw .tscn text on missing dependencies
 
-## All 162 Tools
+## All 168 Tools
 
 ### Project Management (7 tools)
 | Tool | Description |
@@ -319,7 +326,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 | `game_play_animation` | Control AnimationPlayer |
 | `game_tween_property` | Tween a property with easing |
 
-### Runtime Utilities (5 tools)
+### Runtime Utilities (9 tools)
 | Tool | Description |
 |------|-------------|
 | `game_pause` | Pause/unpause the game |
@@ -327,6 +334,10 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 | `game_wait` | Wait N frames |
 | `game_get_nodes_in_group` | Query nodes by group |
 | `game_find_nodes_by_class` | Find nodes by class type |
+| `game_resume` | Clear game pause / report debugger state |
+| `game_wait_for_node` | Wait until a node exists in the running game |
+| `game_wait_for_scene` | Wait until the current scene is loaded |
+| `game_reload_scripts` | Hot-reload .gd scripts and reattach to live nodes |
 
 ### File I/O (4 tools)
 | Tool | Description |
@@ -455,7 +466,7 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 | `game_audio_bus_layout` | Create/remove/reorder audio buses and routing |
 | `game_audio_spatial` | Configure AudioStreamPlayer3D spatial properties |
 
-### Editor & Project Tools (15 tools)
+### Editor & Project Tools (17 tools)
 | Tool | Description |
 |------|-------------|
 | `connect_game` | Connect to an already-running game (editor-launched) with auto-reconnect |
@@ -473,6 +484,8 @@ The original godot-mcp provided 20 tools for basic project management and scene 
 | `manage_scene_structure` | Rename/duplicate/move nodes within .tscn scenes |
 | `manage_translations` | List/add/remove translation files in project |
 | `game_locale` | Set/get locale and translate strings at runtime |
+| `editor_resume` | Resume a game paused on the editor debugger (TCP 9091) |
+| `editor_reload_scripts` | Hot-reload .gd resources and push to the running game (TCP 9091) |
 
 ### UI Controls (8 tools)
 | Tool | Description |
@@ -608,13 +621,13 @@ The server uses two communication channels:
 
 ## Testing
 
-The project uses [Vitest](https://vitest.dev/) with 479 tests across 5 files:
+The project uses [Vitest](https://vitest.dev/) with 496 tests across 5 files:
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `tests/utils.test.ts` | 36 | Parameter mappings, normalization, path validation, error responses, version detection |
-| `tests/tool-definitions.test.ts` | 170 | All 162 tools defined, schemas valid, names unique, descriptions < 80 chars |
-| `tests/handlers.test.ts` | 241 | Game command arg transforms, required-param validation, headless op path checks, source structure |
+| `tests/tool-definitions.test.ts` | 176 | All 168 tools defined, schemas valid, names unique, descriptions < 80 chars |
+| `tests/handlers.test.ts` | 252 | Game command arg transforms, required-param validation, headless op path checks, source structure |
 | `tests/dotnet.test.ts` | 20 | .NET feature flag, .csproj generation, C# script template generation, identifier validation |
 | `tests/validate-script.test.ts` | 12 | GDScript diagnostic parsing + git-changed file collection |
 

@@ -89,6 +89,10 @@ func _handle_command(line: String) -> void:
 		"rescan":
 			EditorInterface.get_resource_filesystem().scan()
 			_send_response({"success": true, "action": "rescan"})
+		"resume":
+			_cmd_resume()
+		"reload_scripts":
+			_cmd_reload_scripts(params)
 		"eval":
 			_cmd_eval(params)
 		"ping":
@@ -103,6 +107,59 @@ func _cmd_restart_editor(params: Dictionary) -> void:
 	timer.timeout.connect(func() -> void:
 		EditorInterface.restart_editor(save)
 	)
+
+# Best-effort: continue a debugger that is paused on a breakpoint or script
+# error. The game itself is frozen while paused, so this must run in the editor
+# process. Uses internal editor nodes via duck-typing; harmless if unavailable.
+func _cmd_resume() -> void:
+	var resumed: bool = false
+	var detail: String = ""
+	var dbg: Node = get_tree().root.find_child("EditorDebuggerNode", true, false)
+	if dbg != null:
+		detail = "EditorDebuggerNode found (%s)" % dbg.get_path()
+		if dbg.has_method("get_paused_debugger"):
+			var paused: Object = dbg.call("get_paused_debugger")
+			if paused != null and paused.has_method("_debug_continue"):
+				paused.call("_debug_continue")
+				resumed = true
+			else:
+				detail += "; no paused debugger to continue"
+		else:
+			detail += "; get_paused_debugger unavailable"
+	else:
+		detail = "EditorDebuggerNode not found"
+	_send_response({"success": resumed, "action": "resume", "resumed": resumed, "detail": detail})
+
+# Best-effort hot reload from the editor: reloads script resources from disk and
+# asks the editor's script debugger to push the updated scripts to a running game.
+func _cmd_reload_scripts(params: Dictionary) -> void:
+	var paths: Array = params.get("scripts", [])
+	var reloaded: Array = []
+	var errors: Array = []
+	if paths is Array and paths.size() > 0:
+		for p in paths:
+			var script_path: String = str(p)
+			if not script_path.ends_with(".gd"):
+				continue
+			if ResourceLoader.exists(script_path):
+				var fresh: Resource = ResourceLoader.load(script_path, "Script", ResourceLoader.CACHE_MODE_REPLACE)
+				reloaded.append({"script": script_path, "loaded": fresh != null})
+			else:
+				errors.append({"script": script_path, "error": "resource not found"})
+	else:
+		EditorInterface.get_resource_filesystem().scan()
+	var dbg: Node = get_tree().root.find_child("EditorDebuggerNode", true, false)
+	var pushed: bool = false
+	if dbg != null and dbg.has_method("reload_scripts"):
+		dbg.call("reload_scripts")
+		pushed = true
+	_send_response({
+		"success": true,
+		"action": "reload_scripts",
+		"reloaded": reloaded,
+		"errors": errors,
+		"pushed_to_debugger": pushed,
+	})
 
 func _cmd_eval(params: Dictionary) -> void:
 	var code: String = params.get("code", "")

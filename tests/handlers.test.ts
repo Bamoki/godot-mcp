@@ -283,6 +283,75 @@ describe('Game command handlers — argument transforms', () => {
     });
   });
 
+  // game_resume (no args)
+  describe('handleGameResume', () => {
+    it('sends empty args', () => {
+      const r = fakeGameCommand(true, true, {}, () => ({}));
+      expect(r.commandArgs).toEqual({});
+    });
+  });
+
+  // game_wait_for_node
+  describe('handleGameWaitForNode', () => {
+    it('maps nodePath to node_path', () => {
+      const args = normalizeParameters({ nodePath: '/root/Main/Player' });
+      const r = fakeGameCommand(true, true, args, a => ({
+        node_path: a.nodePath,
+        ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      }));
+      expect(r.commandArgs).toEqual({ node_path: '/root/Main/Player' });
+    });
+
+    it('passes timeout_ms when provided', () => {
+      const args = normalizeParameters({ nodePath: '/root/Main/Player', timeoutMs: 8000 });
+      const r = fakeGameCommand(true, true, args, a => ({
+        node_path: a.nodePath,
+        ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      }));
+      expect(r.commandArgs).toEqual({ node_path: '/root/Main/Player', timeout_ms: 8000 });
+    });
+  });
+
+  // game_wait_for_scene
+  describe('handleGameWaitForScene', () => {
+    it('omits scene_path when not provided', () => {
+      const r = fakeGameCommand(true, true, {}, a => ({
+        ...(a.scenePath ? { scene_path: a.scenePath } : {}),
+        ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      }));
+      expect(r.commandArgs).toEqual({});
+    });
+
+    it('maps scenePath to scene_path', () => {
+      const args = normalizeParameters({ scenePath: 'res://scenes/level2.tscn' });
+      const r = fakeGameCommand(true, true, args, a => ({
+        ...(a.scenePath ? { scene_path: a.scenePath } : {}),
+        ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      }));
+      expect(r.commandArgs).toEqual({ scene_path: 'res://scenes/level2.tscn' });
+    });
+  });
+
+  // game_reload_scripts
+  describe('handleGameReloadScripts', () => {
+    it('passes scripts and reinit', () => {
+      const args = normalizeParameters({ scripts: ['res://player.gd'], reinit: true });
+      const r = fakeGameCommand(true, true, args, a => ({
+        scripts: a.scripts || [],
+        reinit: a.reinit || false,
+      }));
+      expect(r.commandArgs).toEqual({ scripts: ['res://player.gd'], reinit: true });
+    });
+
+    it('defaults to empty scripts and false reinit', () => {
+      const r = fakeGameCommand(true, true, {}, a => ({
+        scripts: a.scripts || [],
+        reinit: a.reinit || false,
+      }));
+      expect(r.commandArgs).toEqual({ scripts: [], reinit: false });
+    });
+  });
+
   // game_connect_signal
   describe('handleGameConnectSignal', () => {
     const argsFn = (a: any) => ({
@@ -610,6 +679,26 @@ describe('Handler required-parameter validation', () => {
     // The handler checks: if (!args.code) return createErrorResponse(...)
     const result = !args.code ? createErrorResponse('code parameter is required.') : null;
     expect(result!.isError).toBe(true);
+  });
+
+  it('game_wait_for_node requires nodePath', () => {
+    const args = normalizeParameters({});
+    expect(!args.nodePath).toBe(true);
+  });
+
+  it('game_wait_for_scene is valid without args', () => {
+    const args = normalizeParameters({});
+    expect(args.scenePath).toBeUndefined();
+  });
+
+  it('editor_resume requires projectPath', () => {
+    const args = normalizeParameters({});
+    expect(!args.projectPath).toBe(true);
+  });
+
+  it('editor_reload_scripts requires projectPath', () => {
+    const args = normalizeParameters({});
+    expect(!args.projectPath).toBe(true);
   });
 
   it('game_get_property requires nodePath and property', () => {
@@ -971,7 +1060,9 @@ describe('Handler source structure', () => {
       'handleGameGetProperty', 'handleGameSetProperty', 'handleGameCallMethod',
       'handleGameGetNodeInfo', 'handleGameInstantiateScene', 'handleGameRemoveNode',
       'handleGameChangeScene', 'handleGamePause', 'handleGamePerformance',
-      'handleGameWait', 'handleGameConnectSignal', 'handleGameDisconnectSignal',
+      'handleGameWait', 'handleGameResume', 'handleGameWaitForNode',
+      'handleGameWaitForScene', 'handleGameReloadScripts',
+      'handleGameConnectSignal', 'handleGameDisconnectSignal',
       'handleGameEmitSignal', 'handleGamePlayAnimation', 'handleGameTweenProperty',
       'handleGameGetNodesInGroup', 'handleGameFindNodesByClass', 'handleGameReparentNode',
       // New game handlers
@@ -1979,8 +2070,8 @@ describe('Tool dispatch switch statement', () => {
   it('every case returns await this.handle*', () => {
     const caseRegex = /case '(\w+)':\s*\n\s*return await this\.handle/g;
     const matches = [...sourceCode.matchAll(caseRegex)];
-    // Should match all 162 tools
-    expect(matches.length).toBe(162);
+    // Should match all 168 tools
+    expect(matches.length).toBe(168);
   });
 
   it('no case falls through without return', () => {

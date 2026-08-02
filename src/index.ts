@@ -1285,6 +1285,10 @@ class GodotServer {
                 type: 'number',
                 description: 'Max eval time in ms before abort (default: 30000)',
               },
+              safe: {
+                type: 'boolean',
+                description: 'Fault-tolerant (default true): single-expression code never pauses on error',
+              },
             },
             required: ['code'],
           },
@@ -1451,6 +1455,70 @@ class GodotServer {
                 type: 'string',
                 enum: ['render', 'physics'],
                 description: 'Frame to wait on: "physics" (fixed 60Hz ticks) or "render". Default: render',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'game_resume',
+          description: 'Resume the game after a pause (use editor_resume for debugger breaks)',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
+        {
+          name: 'game_wait_for_node',
+          description: 'Wait until a node exists in the running game (polls the scene tree)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              nodePath: {
+                type: 'string',
+                description: 'Path to the node (e.g., "/root/Main/Player")',
+              },
+              timeoutMs: {
+                type: 'number',
+                description: 'Max wait in ms (default: 5000)',
+              },
+            },
+            required: ['nodePath'],
+          },
+        },
+        {
+          name: 'game_wait_for_scene',
+          description: 'Wait until the current scene is loaded (optionally matching a path)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scenePath: {
+                type: 'string',
+                description: 'Optional res:// scene path to wait for (e.g. "res://scenes/level2.tscn")',
+              },
+              timeoutMs: {
+                type: 'number',
+                description: 'Max wait in ms (default: 10000)',
+              },
+            },
+            required: [],
+          },
+        },
+        {
+          name: 'game_reload_scripts',
+          description: 'Hot-reload GDScript resources from disk and re-attach existing nodes',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              scripts: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Optional list of res:// script paths to reload (default: all scripts in use)',
+              },
+              reinit: {
+                type: 'boolean',
+                description: 'Re-run _ready() on re-attached nodes (best-effort). Default: false',
               },
             },
             required: [],
@@ -3488,6 +3556,33 @@ class GodotServer {
             required: ['projectPath'],
           },
         },
+        {
+          name: 'editor_resume',
+          description: 'Resume a game paused by the editor debugger (via editor plugin TCP 9091)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Absolute path to the Godot project' },
+            },
+            required: ['projectPath'],
+          },
+        },
+        {
+          name: 'editor_reload_scripts',
+          description: 'Hot-reload .gd resources via the editor plugin and push to the game (TCP 9091)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: { type: 'string', description: 'Absolute path to the Godot project' },
+              scripts: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Optional list of res:// script paths to reload (default: all)',
+              },
+            },
+            required: ['projectPath'],
+          },
+        },
       ],
     }));
 
@@ -3560,6 +3655,14 @@ class GodotServer {
           return await this.handleGamePerformance();
         case 'game_wait':
           return await this.handleGameWait(request.params.arguments);
+        case 'game_resume':
+          return await this.handleGameResume();
+        case 'game_wait_for_node':
+          return await this.handleGameWaitForNode(request.params.arguments);
+        case 'game_wait_for_scene':
+          return await this.handleGameWaitForScene(request.params.arguments);
+        case 'game_reload_scripts':
+          return await this.handleGameReloadScripts(request.params.arguments);
         // Headless scene tools
         case 'read_scene':
           return await this.handleReadScene(request.params.arguments);
@@ -3838,6 +3941,10 @@ class GodotServer {
           return await this.handleRestartEditor(request.params.arguments);
         case 'manage_editor_plugin':
           return await this.handleManageEditorPlugin(request.params.arguments);
+        case 'editor_resume':
+          return await this.handleEditorResume(request.params.arguments);
+        case 'editor_reload_scripts':
+          return await this.handleEditorReloadScripts(request.params.arguments);
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -4923,6 +5030,7 @@ class GodotServer {
     return this.gameCommand('eval', args, a => ({
       code: a.code,
       ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+      ...(a.safe !== undefined ? { safe: a.safe } : {}),
     }), timeoutMs + 2000);
   }
 
@@ -4984,6 +5092,35 @@ class GodotServer {
 
   private async handleGameWait(args: any) {
     return this.gameCommand('wait', args, a => ({ frames: a.frames || 1, frame_type: a.frameType || 'render' }), 30000);
+  }
+
+  private async handleGameResume() {
+    return this.gameCommand('resume', {}, () => ({}));
+  }
+
+  private async handleGameWaitForNode(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.nodePath) return createErrorResponse('nodePath is required.');
+    return this.gameCommand('wait_for_node', args, a => ({
+      node_path: a.nodePath,
+      ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+    }), (args.timeoutMs ?? 5000) + 2000);
+  }
+
+  private async handleGameWaitForScene(args: any) {
+    args = normalizeParameters(args || {});
+    return this.gameCommand('wait_for_scene', args, a => ({
+      ...(a.scenePath ? { scene_path: a.scenePath } : {}),
+      ...(a.timeoutMs !== undefined ? { timeout_ms: a.timeoutMs } : {}),
+    }), (args.timeoutMs ?? 10000) + 2000);
+  }
+
+  private async handleGameReloadScripts(args: any) {
+    args = normalizeParameters(args || {});
+    return this.gameCommand('reload_scripts', args, a => ({
+      scripts: a.scripts || [],
+      reinit: a.reinit || false,
+    }), 30000);
   }
 
 
@@ -7445,6 +7582,34 @@ class GodotServer {
     return {
       content: [{ type: 'text', text: `Godot editor restarted for project at ${args.projectPath} (process-level restart).` }],
     };
+  }
+
+  private async handleEditorResume(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.projectPath) return createErrorResponse('projectPath is required.');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!this.isEditorPluginInstalled(args.projectPath)) {
+      return createErrorResponse('Godot MCP editor plugin is not installed in this project. Install it with manage_editor_plugin (action: install) and restart the editor.');
+    }
+    const response = await this.sendEditorCommand('resume', {});
+    if (response === null) {
+      return createErrorResponse('No editor plugin is listening on TCP 9091. Is the Godot editor open with the plugin enabled?');
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
+  }
+
+  private async handleEditorReloadScripts(args: any) {
+    args = normalizeParameters(args || {});
+    if (!args.projectPath) return createErrorResponse('projectPath is required.');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!this.isEditorPluginInstalled(args.projectPath)) {
+      return createErrorResponse('Godot MCP editor plugin is not installed in this project. Install it with manage_editor_plugin (action: install) and restart the editor.');
+    }
+    const response = await this.sendEditorCommand('reload_scripts', { scripts: args.scripts || [] });
+    if (response === null) {
+      return createErrorResponse('No editor plugin is listening on TCP 9091. Is the Godot editor open with the plugin enabled?');
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
   }
 
   private isEditorPluginInstalled(projectPath: string): boolean {
